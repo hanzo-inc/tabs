@@ -14,21 +14,19 @@
  * server this product exists without.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Anchor, Button, Fill, H1, Paragraph, Screen, SizableText, YStack } from '@hanzo/ui';
+import { Anchor, Button, Fill, H1, Paragraph, Screen, YStack } from '@hanzo/ui';
 
 import { AMBER } from '@/lib/panes';
-import { useFleet } from '@/lib/fleet';
 import { renew, session, signIn, signOut } from '@/lib/iam';
-import { Workspace } from '@/components/workspace';
+import { Tabs } from '@/components/tabs';
 
 export default function App() {
   const [token, setToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const { hosts, streams, read, error, mint, launch } = useFleet(token);
-  /** A sign-in that did not go through. The fleet's `error` is about the
-   *  registry, which is a different failure with a different remedy. */
+  /** A sign-in that did not go through. A failed registry read is the
+   *  workspace's to say, a different failure with a different remedy. */
   const [refused, setRefused] = useState<string | null>(null);
 
   // The session this browser already holds, renewed if the access token has
@@ -113,63 +111,38 @@ export default function App() {
   return (
     <Screen render="main" height="100dvh" p="$1.5">
       <Fill scroll={false}>
-        {read ? (
-          <Workspace
-            hosts={hosts}
-            mint={mint}
-            streams={streams}
-            // The brand and the way out ride in the workspace's action row.
-            // They were a row of their own, which cost every pane ~28px of
-            // terminal for two controls that fit in the gap beside the splits —
-            // and a workspace is measured in rows you can read.
-            start={
-              <Anchor
-                render={<Link href="/" />}
-                size="$1"
-                shrink={0}
-                fontFamily="$mono"
-                color="var(--text-secondary)"
-                hoverStyle={{ color: '$color' }}
-              >
-                Tabs
-              </Anchor>
-            }
-            end={
-              <>
-                {error ? (
-                  <SizableText size="$1" color={AMBER} numberOfLines={1} ellipsis>
-                    {error}
-                  </SizableText>
-                ) : null}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  shrink={0}
-                  onPress={() => {
-                    void signOut();
-                    setToken(null);
-                  }}
-                >
-                  Disconnect
-                </Button>
-              </>
-            }
-            // Started, then read back, then named — in that order. The workspace
-            // opens a shell on the name it gets, and a pane can only mint a
-            // ticket for a machine the registry has already handed back, so the
-            // refresh is what stands between the two.
-            // Started, then read back, then named — `launch` keeps that order,
-            // because a pane can only mint a ticket for a machine the registry
-            // has already handed back.
-            onLaunch={launch}
-          />
-        ) : (
-          <YStack flex={1} items="center" justify="center">
-            <SizableText size="$2" color="var(--text-disabled)">
-              {error ? 'The registry is unavailable.' : 'Reading your machines…'}
-            </SizableText>
-          </YStack>
-        )}
+        <Tabs
+          token={token}
+          // The brand and the way out ride in the workspace's action row.
+          // They were a row of their own, which cost every pane ~28px of
+          // terminal for two controls that fit in the gap beside the splits —
+          // and a workspace is measured in rows you can read.
+          start={
+            <Anchor
+              render={<Link href="/" />}
+              size="$1"
+              shrink={0}
+              fontFamily="$mono"
+              color="var(--text-secondary)"
+              hoverStyle={{ color: '$color' }}
+            >
+              Tabs
+            </Anchor>
+          }
+          end={
+            <Button
+              variant="ghost"
+              size="sm"
+              shrink={0}
+              onPress={() => {
+                void signOut();
+                setToken(null);
+              }}
+            >
+              Disconnect
+            </Button>
+          }
+        />
       </Fill>
 
       {/* The assistant, bottom right — the SAME corner console.hanzo.ai and

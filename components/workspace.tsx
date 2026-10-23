@@ -306,10 +306,14 @@ export function Workspace({
   mint,
   onLaunch,
   streams = null,
+  at,
   start,
   end,
 }: {
   hosts: TerminalHost[];
+  /** A machine the host's address names (hanzo.ai/tabs/<machine>): once it is
+   *  live, a pane on it is focused, or a shell on it is opened beside the rest. */
+  at?: string | null;
   /** What sits at the ends of the action row — the brand, and the way out.
    *  They are the page's, not the workspace's, but they are three controls
    *  wide and a row of their own cost every pane 28px of terminal. A workspace
@@ -365,12 +369,13 @@ export function Workspace({
       );
       setTile(saved.tree);
     } else if (live[0]) {
+      const first = live.find((h) => h.machine === at) ?? live[0];
       const id = `p${seq.current++}`;
-      setBind({ [id]: { kind: 'shell', shell: { machine: live[0].machine, name: mintName([]) } } });
+      setBind({ [id]: { kind: 'shell', shell: { machine: first.machine, name: mintName([]) } } });
       setTile(pane(id));
     }
     setReady(true);
-  }, [live, ready]);
+  }, [live, ready, at]);
 
   useEffect(() => {
     if (!ready) return;
@@ -429,6 +434,19 @@ export function Workspace({
     setFocus(id);
     return id;
   }, []);
+
+  // The machine the address names, shown once per address: a pane already on
+  // it takes the focus, else a shell on it opens beside the focused pane. A
+  // machine not live yet waits for the registry; the address keeps asking.
+  const shown = useRef<string | null>(null);
+  useEffect(() => {
+    if (!ready || !at || shown.current === at || !live.some((h) => h.machine === at)) return;
+    shown.current = at;
+    const held = Object.keys(bind).find((id) => machineOf(bind[id]!) === at);
+    const beside = focus ?? ids[0] ?? null;
+    if (held) setFocus(held);
+    else open(shellOn(at), beside ? 'row' : null, beside);
+  }, [ready, at, live, bind, focus, ids, open, shellOn]);
 
   /** Put `what` in a pane that is still open. A pane closed while its machine
    *  was starting stays closed — an answer arriving late must not reopen a box

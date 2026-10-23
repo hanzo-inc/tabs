@@ -169,7 +169,7 @@ export const createSandbox = async (
   kind: Class = 'dev',
   origin = API,
 ): Promise<SandboxMachine> => {
-  const taken = new Set((await sandboxes(token)).map(machineName));
+  const taken = new Set((await sandboxes(token, origin)).map(machineName));
   // Every machine carries its number, the first one included: `cloud` beside
   // `cloud-2` reads as a different kind of thing rather than the one before it.
   // The bound is the pigeonhole — among n machines, one of n+1 names is free.
