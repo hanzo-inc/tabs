@@ -1,9 +1,10 @@
 minimumReleaseAgeExclude:
-  - '@hanzo/ui@8.29.3'
+  - '@hanzo/*'
 
 catalog:
   '@hanzo/design': '0.5.24'
   '@hanzo/gui': '8.3.5'
+  '@hanzo/i18n': '0.5.3'
   '@hanzo/iam': '0.21.17'
   '@hanzo/ui': '8.29.3'
   '@playwright/test': '^1.62.1'

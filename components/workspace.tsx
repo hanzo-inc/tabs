@@ -306,10 +306,14 @@ export function Workspace({
   mint,
   onLaunch,
   streams = null,
+  at,
   start,
   end,
 }: {
   hosts: TerminalHost[];
+  /** A machine the host's address names (hanzo.ai/tabs/<machine>): once it is
+   *  live, a pane on it is focused, or a shell on it is opened beside the rest. */
+  at?: string | null;
   /** What sits at the ends of the action row — the brand, and the way out.
    *  They are the page's, not the workspace's, but they are three controls
    *  wide and a row of their own cost every pane 28px of terminal. A workspace
@@ -365,12 +369,13 @@ export function Workspace({
       );
       setTile(saved.tree);
     } else if (live[0]) {
+      const first = live.find((h) => h.machine === at) ?? live[0];
       const id = `p${seq.current++}`;
-      setBind({ [id]: { kind: 'shell', shell: { machine: live[0].machine, name: mintName([]) } } });
+      setBind({ [id]: { kind: 'shell', shell: { machine: first.machine, name: mintName([]) } } });
       setTile(pane(id));
     }
     setReady(true);
-  }, [live, ready]);
+  }, [live, ready, at]);
 
   useEffect(() => {
     if (!ready) return;
@@ -430,6 +435,19 @@ export function Workspace({
     return id;
   }, []);
 
+  // The machine the address names, shown once per address: a pane already on
+  // it takes the focus, else a shell on it opens beside the focused pane. A
+  // machine not live yet waits for the registry; the address keeps asking.
+  const shown = useRef<string | null>(null);
+  useEffect(() => {
+    if (!ready || !at || shown.current === at || !live.some((h) => h.machine === at)) return;
+    shown.current = at;
+    const held = Object.keys(bind).find((id) => machineOf(bind[id]!) === at);
+    const beside = focus ?? ids[0] ?? null;
+    if (held) setFocus(held);
+    else open(shellOn(at), beside ? 'row' : null, beside);
+  }, [ready, at, live, bind, focus, ids, open, shellOn]);
+
   /** Put `what` in a pane that is still open. A pane closed while its machine
    *  was starting stays closed — an answer arriving late must not reopen a box
    *  someone shut. */
@@ -487,6 +505,9 @@ export function Workspace({
   // The breakpoint is the ROOM, not the device: a phone in landscape and a narrow
   // desktop window have the same problem, and neither can hold two terminals.
   const paging = box.w > 0 && box.w < 640;
+  // The action row's words need about 960px beside the splits; narrower, the
+  // actions are their icons, and the row wraps before anything is cut off.
+  const bare = box.w > 0 && box.w < 960;
   const paged = useMemo(
     () => (tile && paging ? pageGeometry(tile, stackFor(box.h)) : null),
     [tile, paging, box.h],
@@ -785,12 +806,13 @@ export function Workspace({
   return (
     <YStack height="100%" width="100%" gap="$2.5" p="$3">
       {/* One row. Actions, not a status report. */}
-      <XStack shrink={0} items="center" gap="$2">
+      <XStack shrink={0} items="center" gap="$2" flexWrap="wrap">
         {start}
         <Act
           run={() => openShell(focus ? 'row' : null, focus)}
           icon={<Plus size={14} />}
           label="New shell"
+          bare={bare}
         />
         {/* One button for the screen, whether or not a machine with one exists
             yet: with a desktop live it opens it, without one it starts it. The
@@ -801,18 +823,21 @@ export function Workspace({
             run={() => openScreen(focus ? 'row' : null, focus)}
             icon={<Monitor size={14} />}
             label="Desktop"
+            bare={bare}
           />
         ) : null}
         <Act
           run={() => openPage(focus ? 'row' : null, focus)}
           icon={<Globe size={14} />}
           label="Browse"
+          bare={bare}
         />
         {onLaunch ? (
           <Act
             run={() => launch('dev')}
             icon={<Cloud size={14} />}
             label="New cloud machine"
+            bare={bare}
           />
         ) : null}
         <XStack ml="auto" shrink={0} items="center" gap="$1.5">
@@ -1301,11 +1326,13 @@ export function Workspace({
  * and the reason it failed both belong to that pane. Keeping a spinner here too
  * would say the same thing twice, in the one place you are not looking.
  */
-function Act({ run, icon, label }: { run: () => void; icon: ReactNode; label: string }) {
+/** One action of the row. `bare` draws the icon alone, its name the button's
+ *  label and tooltip, where the row has no room for words. */
+function Act({ run, icon, label, bare }: { run: () => void; icon: ReactNode; label: string; bare?: boolean }) {
   return (
-    <Button variant="outline" size="sm" shrink={0} onPress={run}>
+    <Button variant="outline" size="sm" shrink={0} onPress={run} aria-label={label} {...(bare ? { title: label } : {})}>
       {icon}
-      <SizableText size="$1">{label}</SizableText>
+      {bare ? null : <SizableText size="$1">{label}</SizableText>}
     </Button>
   );
 }

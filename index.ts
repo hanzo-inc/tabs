@@ -1,8 +1,8 @@
 /**
  * The workspace, for whoever is hosting it.
  *
- * tabs.hanzo.ai is one host. The desktop shell is another, and hanzo.ai a
- * third — the same tiling of terminals, desktops and pages in each, because it
+ * tabs.hanzo.ai is one host. The app (hanzo.ai/tabs, the desktop shell) is
+ * another, and platform.hanzo.ai/tabs a third — the same tiling of terminals, desktops and pages in each, because it
  * is the same component rather than three that look alike. That is the whole
  * reason this file exists: a second copy of a pane tree is a second set of
  * answers to what a split does, and they drift.
@@ -21,6 +21,12 @@
 export { Workspace } from './components/workspace';
 
 /**
+ * Tabs, whole: what every host draws. The fleet read with the host's bearer,
+ * nothing opened before the registry answers, the workspace once it has.
+ */
+export { Tabs } from './components/tabs';
+
+/**
  * The wiring, so a host supplies a token and nothing else.
  *
  * `useFleet` reads the registry, folds sessions and sandboxes into machines,
@@ -28,7 +34,7 @@ export { Workspace } from './components/workspace';
  * page; copied into each host it would be three answers to how often a machine
  * goes stale.
  */
-export { type Fleet, useFleet } from './lib/fleet';
+export { type Fleet, type Token, useFleet } from './lib/fleet';
 
 export {
   DEFAULT_SHELL,
