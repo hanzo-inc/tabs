@@ -505,6 +505,9 @@ export function Workspace({
   // The breakpoint is the ROOM, not the device: a phone in landscape and a narrow
   // desktop window have the same problem, and neither can hold two terminals.
   const paging = box.w > 0 && box.w < 640;
+  // The action row's words need about 960px beside the splits; narrower, the
+  // actions are their icons, and the row wraps before anything is cut off.
+  const bare = box.w > 0 && box.w < 960;
   const paged = useMemo(
     () => (tile && paging ? pageGeometry(tile, stackFor(box.h)) : null),
     [tile, paging, box.h],
@@ -803,12 +806,13 @@ export function Workspace({
   return (
     <YStack height="100%" width="100%" gap="$2.5" p="$3">
       {/* One row. Actions, not a status report. */}
-      <XStack shrink={0} items="center" gap="$2">
+      <XStack shrink={0} items="center" gap="$2" flexWrap="wrap">
         {start}
         <Act
           run={() => openShell(focus ? 'row' : null, focus)}
           icon={<Plus size={14} />}
           label="New shell"
+          bare={bare}
         />
         {/* One button for the screen, whether or not a machine with one exists
             yet: with a desktop live it opens it, without one it starts it. The
@@ -819,18 +823,21 @@ export function Workspace({
             run={() => openScreen(focus ? 'row' : null, focus)}
             icon={<Monitor size={14} />}
             label="Desktop"
+            bare={bare}
           />
         ) : null}
         <Act
           run={() => openPage(focus ? 'row' : null, focus)}
           icon={<Globe size={14} />}
           label="Browse"
+          bare={bare}
         />
         {onLaunch ? (
           <Act
             run={() => launch('dev')}
             icon={<Cloud size={14} />}
             label="New cloud machine"
+            bare={bare}
           />
         ) : null}
         <XStack ml="auto" shrink={0} items="center" gap="$1.5">
@@ -1319,11 +1326,13 @@ export function Workspace({
  * and the reason it failed both belong to that pane. Keeping a spinner here too
  * would say the same thing twice, in the one place you are not looking.
  */
-function Act({ run, icon, label }: { run: () => void; icon: ReactNode; label: string }) {
+/** One action of the row. `bare` draws the icon alone, its name the button's
+ *  label and tooltip, where the row has no room for words. */
+function Act({ run, icon, label, bare }: { run: () => void; icon: ReactNode; label: string; bare?: boolean }) {
   return (
-    <Button variant="outline" size="sm" shrink={0} onPress={run}>
+    <Button variant="outline" size="sm" shrink={0} onPress={run} aria-label={label} {...(bare ? { title: label } : {})}>
       {icon}
-      <SizableText size="$1">{label}</SizableText>
+      {bare ? null : <SizableText size="$1">{label}</SizableText>}
     </Button>
   );
 }
