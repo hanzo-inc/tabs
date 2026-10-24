@@ -64,7 +64,7 @@ export class Refusal extends Error {
 /** Out of credit, or past the org's spend cap. Both are answered the same way —
  *  put money on it, or bring a machine of your own — so they are one question. */
 export const unfunded = (e: unknown): boolean =>
-  e instanceof Refusal && (e.code === 'insufficient_balance' || e.code === 'spend_cap_exceeded');
+  e instanceof Refusal && (e.status === 402 || e.code === 'insufficient_balance' || e.code === 'spend_cap_exceeded');
 
 /**
  * Read a refusal off a response, in EITHER shape the fleet sends.
@@ -169,19 +169,33 @@ export const createSandbox = async (
   kind: Class = 'dev',
   origin = API,
 ): Promise<SandboxMachine> => {
-  const taken = new Set((await sandboxes(token)).map(machineName));
+  const taken = new Set((await sandboxes(token, origin)).map(machineName));
   // Every machine carries its number, the first one included: `cloud` beside
   // `cloud-2` reads as a different kind of thing rather than the one before it.
   // The bound is the pigeonhole — among n machines, one of n+1 names is free.
   const stem = STEM[kind];
   let project = `${stem}-1`;
   for (let n = 2; taken.has(project); n++) project = `${stem}-${n}`;
-  const res = await fetch(`${origin}/v1/sandboxes`, {
+  let res = await fetch(`${origin}/v1/sandboxes`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
     body: JSON.stringify({ class: kind, project }),
     cache: 'no-store',
   });
+  // If persistent project disk was rejected with 402 (payment required / unfunded),
+  // immediately fallback to a scratch sandbox without persistent project disk,
+  // so the user can run free ephemeral sandboxes and live desktops without interruption.
+  if (res.status === 402) {
+    const scratchRes = await fetch(`${origin}/v1/sandboxes`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ class: kind }),
+      cache: 'no-store',
+    });
+    if (scratchRes.ok) {
+      return (await scratchRes.json()) as SandboxMachine;
+    }
+  }
   // Starting a machine fails for reasons a person can act on — no credit, an
   // image that will not pull, a project already held, an org at its ceiling —
   // and the server says which. A bare status code next to the button would name

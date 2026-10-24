@@ -1131,18 +1131,32 @@ export function Workspace({
                           balance" beside a Close button reads as a dead end when
                           the workspace still works. */}
                       {b.unfunded ? (
-                        <Note>
-                          A cloud machine is ours and costs credit. One of yours costs nothing —
-                          run{' '}
-                          <SizableText render="code" size="$1" fontFamily="$mono" color="$color">
-                            hanzo link
-                          </SizableText>{' '}
-                          on it and its shell opens here.
-                        </Note>
-                      ) : null}
-                      <Button variant="outline" size="sm" onPress={() => doClose(id)}>
-                        Close pane
-                      </Button>
+                        <>
+                          <Note>
+                            A cloud machine is ours and costs credit. Top up your balance or run{' '}
+                            <SizableText render="code" size="$1" fontFamily="$mono" color="$color">
+                              hanzo link
+                            </SizableText>{' '}
+                            on your own machine to open its shell for free.
+                          </Note>
+                          <XStack gap="$2" items="center">
+                            <Button
+                              variant="default"
+                              size="sm"
+                              onPress={() => window.open('https://hanzo.ai/pay', '_blank')}
+                            >
+                              Top up balance
+                            </Button>
+                            <Button variant="outline" size="sm" onPress={() => doClose(id)}>
+                              Close pane
+                            </Button>
+                          </XStack>
+                        </>
+                      ) : (
+                        <Button variant="outline" size="sm" onPress={() => doClose(id)}>
+                          Close pane
+                        </Button>
+                      )}
                     </Cover>
                   ) : b.kind === 'gone' ? (
                     <Cover gap="$2">
