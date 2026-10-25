@@ -10,7 +10,9 @@ browser.
 hanzo link          # on any machine with a shell
 ```
 
-Then open [tabs.hanzo.ai](https://tabs.hanzo.ai).
+Then open [tabs.hanzo.ai](https://tabs.hanzo.ai), or Tabs in the app at
+[hanzo.ai/tabs](https://hanzo.ai/tabs) and [platform.hanzo.ai/tabs](https://platform.hanzo.ai/tabs).
+All three draw the one component this package publishes, `Tabs`.
 
 ## Why it is shaped this way
 
@@ -51,6 +53,7 @@ than three slivers.
 lib/tiles.ts        the layout tree + geometry + the phone projection (pure)
 lib/panes.ts        what a pane shows: a machine and a shell name (pure)
 lib/api.ts          the control-plane read, from the browser
+components/tabs    Tabs, whole: the fleet read with a host's token, then the workspace
 components/         the workspace
 app/                the marketing page and the workspace page
 tests/              39 tests, no browser required

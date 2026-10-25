@@ -1,0 +1,21 @@
+name: CI/CD
+
+# Triggers plus the import; the steps are hanzo.yml. GitHub runs it: hanzo-inc
+# has the hanzo-platform app, so a `linux-amd64` job is a pod on the cluster.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  cicd:
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    uses: hanzoai/ci/.github/workflows/build.yml@v2
+    with:
+      runner: '["linux-amd64"]'
+    secrets: inherit

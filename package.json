@@ -1,8 +1,8 @@
 {
   "name": "@hanzo/tabs",
-  "version": "0.1.8",
+  "version": "0.2.0",
   "license": "MIT",
-  "description": "Keep tabs on your agents. A browser terminal workspace for machines you have linked \u2014 the app at tabs.hanzo.ai, and the component its other hosts mount.",
+  "description": "Keep tabs on your agents. A browser terminal workspace for the machines you have linked and the ones Hanzo starts: tabs.hanzo.ai, and the component hanzo.ai and platform.hanzo.ai draw.",
   "scripts": {
     "dev": "next dev",
     "build": "next build --webpack",
@@ -14,6 +14,7 @@
   "devDependencies": {
     "@hanzo/design": "catalog:",
     "@hanzo/gui": "catalog:",
+    "@hanzo/i18n": "catalog:",
     "@hanzo/iam": "catalog:",
     "@hanzo/ui": "catalog:",
     "@playwright/test": "catalog:",
@@ -37,10 +38,12 @@
     "./panes": "./lib/panes.ts",
     "./tiles": "./lib/tiles.ts",
     "./api": "./lib/api.ts",
-    "./fleet": "./lib/fleet.ts"
+    "./fleet": "./lib/fleet.ts",
+    "./tabs": "./components/tabs.tsx"
   },
   "files": [
     "index.ts",
+    "components/tabs.tsx",
     "components/workspace.tsx",
     "lib/api.ts",
     "lib/fleet.ts",
@@ -53,6 +56,7 @@
   "sideEffects": false,
   "peerDependencies": {
     "@hanzo/gui": "^8.3.5",
+    "@hanzo/i18n": ">=0.4.0",
     "@hanzo/ui": "^8.28.0",
     "lucide-react": "^1.33.0",
     "react": "^19.0.0",

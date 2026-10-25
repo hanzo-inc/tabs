@@ -10,7 +10,7 @@ name: Release
 on:
   push:
     branches: [main]
-    paths-ignore: ['**.md', '.hanzo/workflows/**']
+    paths-ignore: ['**.md']
   workflow_dispatch:
 concurrency: { group: release-tabs, cancel-in-progress: false }
 jobs:
@@ -25,7 +25,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -52,7 +52,7 @@ jobs:
             || { echo "::error::@hanzo/ui/styles.css is not in the export"; exit 1; }
 
       - name: Publish to the Sites plane
-        uses: hanzoai/ci/.github/actions/site@v1
+        uses: hanzoai/ci/.github/actions/site@v2.1.8
         with:
           slug: tabs
           dir: out

@@ -1,12 +1,13 @@
-# Canonical CI/CD config for hanzoai/tabs — the one file both the hanzoai/ci
-# reusable (.hanzo/workflows/cicd.yml) and platform.hanzo.ai read.
+# Canonical CI/CD config for hanzo-inc/tabs — the one file the hanzoai/ci
+# reusable (.github/workflows/cicd.yml) and platform.hanzo.ai read.
 #
-# Tabs IS deployed from this repo — `.hanzo/workflows/release.yml` publishes the
-# static export to the Sites plane (project `tabs`) on every push to main, and
-# that is what tabs.hanzo.ai serves. There is no `images:` and no `deploy:` here
-# because neither describes that: the ingress serves the export straight from
-# s3://hanzo-sites/hanzo/tabs, so this repo builds no image and rolls out no
-# workload. Read the absence as "nothing to build", not as "nothing ships".
+# Two other workflows ship what this repo makes, both on GitHub (hanzo-inc has
+# the hanzo-platform app, so each job is a pod on the cluster):
+#   publish.yml  @hanzo/tabs to npm when package.json is ahead of it; the app
+#                (hanzo.ai/tabs, platform.hanzo.ai/tabs) takes Tabs from there.
+#   release.yml  the static export to the Sites plane (project `tabs`), which is
+#                what tabs.hanzo.ai serves from s3://hanzo-sites/hanzo/tabs.
+# There is no `images:` and no `deploy:` here because neither describes that.
 #
 # The gate is typecheck, the jest suite, and the surface guard. Jest is
 # deliberately narrow and says so in its own config — "pure logic only: the

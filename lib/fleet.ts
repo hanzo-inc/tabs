@@ -14,7 +14,7 @@
  * its own way — a browser mints it with PKCE, the desktop already holds the
  * signed-in user's — and this module has no business knowing which.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   API,
@@ -56,7 +56,20 @@ export interface Fleet {
   refresh: () => void;
 }
 
-export function useFleet(token: string | null, origin: string = API): Fleet {
+/**
+ * The bearer, or how to read it. A host whose session renews in storage (the
+ * app's, platform's) passes the reader, so every poll and every mint asks it
+ * afresh; a host that holds the token in state (tabs.hanzo.ai) passes the value.
+ */
+export type Token = string | null | (() => string | null);
+
+export function useFleet(token: Token, origin: string = API): Fleet {
+  const held = useRef(token);
+  held.current = token;
+  const bearer = useCallback((): string | null => {
+    const t = held.current;
+    return typeof t === 'function' ? t() : t;
+  }, []);
   const [data, setData] = useState<{
     m: Machine[];
     s: Session[];
@@ -66,7 +79,9 @@ export function useFleet(token: string | null, origin: string = API): Fleet {
   const [error, setError] = useState<string | null>(null);
 
   const read = useCallback(
-    async (t: string) => {
+    async () => {
+      const t = bearer();
+      if (!t) return;
       try {
         // The registry is where machines and terminals come from. Sandboxes are
         // a SECOND read against the same plane: caught rather than reported,
@@ -90,17 +105,17 @@ export function useFleet(token: string | null, origin: string = API): Fleet {
         setError(e instanceof Error ? e.message : 'could not reach the registry');
       }
     },
-    [origin],
+    [origin, bearer],
   );
 
-  const refresh = useCallback(() => {
-    if (token) void read(token);
-  }, [token, read]);
+  const refresh = useCallback(() => void read(), [read]);
 
+  // Read now, and on the plane's clock. A new token value reads at once; a
+  // reader is asked on every beat, so a session renewed in storage is used
+  // without the host re-rendering anything.
   useEffect(() => {
-    if (!token) return;
-    void read(token);
-    const beat = setInterval(() => void read(token), BEAT);
+    void read();
+    const beat = setInterval(() => void read(), BEAT);
     return () => clearInterval(beat);
   }, [token, read]);
 
@@ -160,6 +175,7 @@ export function useFleet(token: string | null, origin: string = API): Fleet {
    */
   const mint = useCallback(
     async (host: TerminalHost, what: Binding) => {
+      const token = bearer();
       if (!token) throw new Error('signed out');
       if (host.sandbox) {
         return what.kind === 'screen'
@@ -176,17 +192,18 @@ export function useFleet(token: string | null, origin: string = API): Fleet {
       await grant(token, host.base);
       return shellUrl(host.base, what.shell.name);
     },
-    [token, origin],
+    [bearer, origin],
   );
 
   const launch = useCallback(
     async (kind: Class) => {
+      const token = bearer();
       if (!token) throw new Error('signed out');
       const box = await createSandbox(token, kind, origin);
-      await read(token);
+      await read();
       return machineName(box);
     },
-    [token, origin, read],
+    [bearer, origin, read],
   );
 
   return { hosts, streams: data?.n ?? null, read: data !== null, error, mint, launch, refresh };
