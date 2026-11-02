@@ -776,11 +776,12 @@ export function Workspace({
   const openPage = (dir: Dir | null, target: string | null) =>
     open({ kind: 'page', url: '' }, dir, target);
 
-  /** A screen goes only where there IS one — and where there is none, the
-   *  button starts the machine that has one. One press, one meaning: show me a
-   *  desktop. */
+  /** A screen goes only where there IS one. With a launcher, "New desktop" is a
+   *  new desktop every press: one that reused the first live one made a second
+   *  press look like nothing happened. Without one, the screens that exist are
+   *  all there is. */
   const openScreen = (dir: Dir | null, target: string | null) =>
-    watchable.length ? openHere(screenOn, watchable, dir, target) : launch('desktop');
+    onLaunch ? launch('desktop') : openHere(screenOn, watchable, dir, target);
 
   return (
     <YStack height="100%" width="100%" gap="$2.5" p="$3">
@@ -792,15 +793,21 @@ export function Workspace({
           icon={<Plus size={14} />}
           label="New shell"
         />
-        {/* One button for the screen, whether or not a machine with one exists
-            yet: with a desktop live it opens it, without one it starts it. The
-            alternative — a disabled button beside a second button that makes it
-            work — is two controls for one intention. */}
+        {/* One button starts a desktop. A second, only while one is live, opens a
+            pane on it again: a desktop is a machine you keep, and a pane is one
+            way to look at it. */}
         {watchable.length || onLaunch ? (
           <Act
             run={() => openScreen(focus ? 'row' : null, focus)}
             icon={<Monitor size={14} />}
-            label="Desktop"
+            label={onLaunch ? 'New desktop' : 'Desktop'}
+          />
+        ) : null}
+        {onLaunch && watchable.length ? (
+          <Act
+            run={() => openHere(screenOn, watchable, focus ? 'row' : null, focus)}
+            icon={<Monitor size={14} />}
+            label="Open desktop"
           />
         ) : null}
         <Act
