@@ -1,8 +1,8 @@
 {
   "name": "@hanzo/tabs",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "license": "MIT",
-  "description": "Keep tabs on your agents. A browser terminal workspace for machines you have linked \u2014 the app at tabs.hanzo.ai, and the component its other hosts mount.",
+  "description": "Keep tabs on your agents. A browser terminal workspace for machines you have linked — the app at tabs.hanzo.ai, and the component its other hosts mount.",
   "scripts": {
     "dev": "next dev",
     "build": "next build --webpack",
@@ -40,15 +40,16 @@
     "./fleet": "./lib/fleet.ts"
   },
   "files": [
-    "index.ts",
+    "LICENSE",
+    "README.md",
+    "components/agent.tsx",
     "components/workspace.tsx",
+    "index.ts",
     "lib/api.ts",
     "lib/fleet.ts",
     "lib/panes.ts",
     "lib/plan.ts",
-    "lib/tiles.ts",
-    "README.md",
-    "LICENSE"
+    "lib/tiles.ts"
   ],
   "sideEffects": false,
   "peerDependencies": {
