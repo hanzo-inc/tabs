@@ -144,13 +144,15 @@ export const machineName = (s: SandboxMachine) => s.project || `cloud-${s.id.sli
  *  counted against the ones RUNNING: a stopped `cloud-2` still owns its disk, so
  *  a desktop later handed that name would mount a shell machine's home and call
  *  it a screen. */
-const STEM: Record<Class, string> = { dev: 'cloud', desktop: 'desk' };
+const STEM: Record<Class, string> = { dev: 'cloud', desktop: 'desk', browser: 'web' };
 
 /** The two machines tabs starts. `dev` is the one you shell into — a toolchain,
  *  a home, and a disk that outlives the lease; `desktop` is that plus an X
- *  server, a window manager and a VNC server, so it has a screen. Neither is
+ *  server, a window manager and a VNC server, so it has a screen;  is
+ *  that with Chromium open full screen and DevTools on loopback, so the page on
+ *  the screen is a real browser a person watches and an agent drives. None is
  *  `exec`, the code interpreter's scratch pod, which tabs never opens. */
-export type Class = 'dev' | 'desktop';
+export type Class = 'dev' | 'desktop' | 'browser';
 
 /**
  * Start one, and answer it once it is RUNNING.

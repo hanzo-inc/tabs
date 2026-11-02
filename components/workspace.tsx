@@ -322,7 +322,7 @@ export function Workspace({
    *  about. The caller owns the token; the workspace only ever holds the URL. */
   mint?: (host: TerminalHost, what: Binding) => Promise<string>;
   /** Start a cloud machine of one class, and answer the name it goes by here. */
-  onLaunch?: (kind: 'dev' | 'desktop') => Promise<string>;
+  onLaunch?: (kind: 'dev' | 'desktop' | 'browser') => Promise<string>;
   /** How many tabs the plan lets stream at once (`lib/plan.ts`): 0 none, N a cap,
    *  -1 no cap, null not told — which enforces nothing. */
   streams?: number | null;
@@ -441,9 +441,9 @@ export function Workspace({
    *  look at: a machine that arrives with nothing framed on it is a row in a
    *  list, and you would have to go and ask for the thing you already asked for. */
   const launch = useCallback(
-    (kind: 'dev' | 'desktop') => {
+    (kind: 'dev' | 'desktop' | 'browser') => {
       if (!onLaunch) return;
-      const want = kind === 'desktop' ? 'screen' : 'shell';
+      const want = kind === 'dev' ? 'shell' : 'screen';
       // The pane opens on the CLICK, not on the answer. Provisioning is the
       // long part, so waiting for it before drawing anything is a workspace
       // that sits unchanged for the whole minute you are waiting.
@@ -810,10 +810,12 @@ export function Workspace({
             label="Open desktop"
           />
         ) : null}
+        {/* With a launcher, a browser is a machine: Chromium on a screen you watch and
+            an agent can drive. A framed page is what a host with none can offer. */}
         <Act
-          run={() => openPage(focus ? 'row' : null, focus)}
+          run={() => (onLaunch ? launch('browser') : openPage(focus ? 'row' : null, focus))}
           icon={<Globe size={14} />}
-          label="Browse"
+          label={onLaunch ? 'New browser' : 'Browse'}
         />
         {onLaunch ? (
           <Act

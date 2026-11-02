@@ -202,6 +202,13 @@ describe('a new cloud machine', () => {
     expect(JSON.parse(String(post.init!.body))).toEqual({ class: 'desktop', project: 'desk-1' });
   });
 
+  it('asks for a browser under its own name, a machine with a real page on its screen', async () => {
+    answer([{ id: 'b1', status: 'running', project: 'desk-1' }], { id: 'b2', status: 'running', project: 'web-1' });
+    await createSandbox('t', 'browser');
+    const post = calls.find((c) => c.init?.method === 'POST')!;
+    expect(JSON.parse(String(post.init!.body))).toEqual({ class: 'browser', project: 'web-1' });
+  });
+
   it('counts past the boxes already live, so pressing twice makes two', async () => {
     answer(
       [

@@ -139,7 +139,7 @@ export function useFleet(token: string | null, origin: string = API): Fleet {
         out.set(key, {
           machine: key,
           sandbox: s.id,
-          screen: s.class === 'desktop',
+          screen: s.class === 'desktop' || s.class === 'browser',
           status: 'online',
         });
       }
