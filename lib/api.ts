@@ -278,3 +278,68 @@ export const frameUrl = async (
   if (!body.url) throw new Error(`${door} ticket → empty answer`);
   return `${origin}${body.url}` + (arg ? `&arg=${encodeURIComponent(arg)}` : '');
 };
+
+/** One step of a sandbox agent's turn, as the stream says it (cloud apps/sandbox agent.go). */
+export interface AgentFrame {
+  type: 'say' | 'act' | 'result' | 'error' | 'end';
+  text?: string;
+  tool?: string;
+  args?: unknown;
+  ok?: boolean;
+  rounds?: number;
+}
+
+/** One earlier turn of the conversation: what the person said, and what the AI answered. */
+export interface AgentTurn {
+  role: 'user' | 'assistant';
+  text: string;
+}
+
+/**
+ * Have the AI work a sandbox, and hand each step to onFrame as it happens. The
+ * answer is an event stream; this reads it to the end, or until signal aborts it.
+ */
+export const agentTurn = async (
+  token: string,
+  id: string,
+  body: { message: string; history: AgentTurn[] },
+  onFrame: (f: AgentFrame) => void,
+  signal: AbortSignal,
+  origin = API,
+): Promise<void> => {
+  const res = await fetch(`${origin}/v1/sandbox/${encodeURIComponent(id)}/agent`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+    },
+    body: JSON.stringify(body),
+    cache: 'no-store',
+    signal,
+  });
+  if (!res.ok || !res.body) throw await refusal(res, `agent → ${res.status}`);
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    for (let i = buf.indexOf('\n\n'); i >= 0; i = buf.indexOf('\n\n')) {
+      const chunk = buf.slice(0, i);
+      buf = buf.slice(i + 2);
+      const data = chunk
+        .split('\n')
+        .filter((l) => l.startsWith('data:'))
+        .map((l) => l.slice(5).trimStart())
+        .join('\n');
+      if (!data) continue;
+      try {
+        onFrame(JSON.parse(data) as AgentFrame);
+      } catch {
+        // a frame that is not JSON is one this client does not read
+      }
+    }
+  }
+};

@@ -18,10 +18,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import {
   API,
+  type AgentFrame,
+  type AgentTurn,
   type Class,
   type Machine,
   type SandboxMachine,
   type Session,
+  agentTurn,
   createSandbox,
   frameUrl,
   grant,
@@ -52,6 +55,13 @@ export interface Fleet {
   mint: (host: TerminalHost, what: Binding) => Promise<string>;
   /** Start a cloud box of one class and answer the name it goes by here. */
   launch: (kind: Class) => Promise<string>;
+  /** Have the AI work a cloud box, a step at a time (cloud's sandbox agent). */
+  agent: (
+    host: TerminalHost,
+    body: { message: string; history: AgentTurn[] },
+    onFrame: (f: AgentFrame) => void,
+    signal: AbortSignal,
+  ) => Promise<void>;
   /** Read the registry again now. */
   refresh: () => void;
 }
@@ -189,5 +199,19 @@ export function useFleet(token: string | null, origin: string = API): Fleet {
     [token, origin, read],
   );
 
-  return { hosts, streams: data?.n ?? null, read: data !== null, error, mint, launch, refresh };
+  const agent = useCallback(
+    async (
+      host: TerminalHost,
+      body: { message: string; history: AgentTurn[] },
+      onFrame: (f: AgentFrame) => void,
+      signal: AbortSignal,
+    ) => {
+      if (!token) throw new Error('signed out');
+      if (!host.sandbox) throw new Error('the AI works cloud machines; this one is linked');
+      return agentTurn(token, host.sandbox, body, onFrame, signal, origin);
+    },
+    [token, origin],
+  );
+
+  return { hosts, streams: data?.n ?? null, read: data !== null, error, mint, launch, agent, refresh };
 }

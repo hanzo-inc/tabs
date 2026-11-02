@@ -55,6 +55,7 @@ import {
 import {
   ArrowLeft,
   ArrowRight,
+  Bot,
   Cloud,
   Columns2,
   Globe,
@@ -67,6 +68,9 @@ import {
   X,
 } from 'lucide-react';
 import { Button, Input, Paragraph, SizableText, XStack, YStack } from '@hanzo/ui';
+
+import { AgentPanel } from './agent';
+import type { AgentFrame, AgentTurn } from '../lib/api';
 
 import {
   type TerminalHost,
@@ -305,6 +309,7 @@ export function Workspace({
   hosts,
   mint,
   onLaunch,
+  agent,
   streams = null,
   start,
   end,
@@ -323,6 +328,13 @@ export function Workspace({
   mint?: (host: TerminalHost, what: Binding) => Promise<string>;
   /** Start a cloud machine of one class, and answer the name it goes by here. */
   onLaunch?: (kind: 'dev' | 'desktop' | 'browser') => Promise<string>;
+  /** Have the AI work a cloud machine (cloud's sandbox agent). Absent, no pane offers it. */
+  agent?: (
+    host: TerminalHost,
+    body: { message: string; history: AgentTurn[] },
+    onFrame: (f: AgentFrame) => void,
+    signal: AbortSignal,
+  ) => Promise<void>;
   /** How many tabs the plan lets stream at once (`lib/plan.ts`): 0 none, N a cap,
    *  -1 no cap, null not told — which enforces nothing. */
   streams?: number | null;
@@ -340,6 +352,8 @@ export function Workspace({
   const watchable = useMemo(() => live.filter((h) => h.screen), [live]);
 
   const [tile, setTile] = useState<Tile | null>(null);
+  /** The panes whose AI is shown. A pane's conversation outlives hiding it. */
+  const [talking, setTalking] = useState<Record<string, boolean>>({});
   const [bind, setBind] = useState<Record<string, Binding>>({});
   const seq = useRef(0);
   const [ready, setReady] = useState(false);
@@ -1037,6 +1051,15 @@ export function Workspace({
                   </SizableText>
                     </>
                   )}
+                  {host?.sandbox && agent ? (
+                    <Chip
+                      run={() => setTalking((t) => ({ ...t, [id]: !t[id] }))}
+                      title={talking[id] ? 'Hide the AI and take control' : 'Work this machine with AI'}
+                      ml={paging ? 'auto' : 0}
+                    >
+                      <Bot size={14} />
+                    </Chip>
+                  ) : null}
                   {paging ? null : (
                     <XStack ml="auto" items="center" gap="$1">
                       <Chip run={() => openShell('row', id)} title="Split right">
@@ -1060,6 +1083,7 @@ export function Workspace({
                   </Chip>
                 </XStack>
 
+                <XStack flex={1} minH={0} flexDirection={paging ? 'column' : 'row'}>
                 <YStack position="relative" flex={1} minH={0} bg="black">
                   {url ? (
                     <iframe
@@ -1222,6 +1246,15 @@ export function Workspace({
                     </Cover>
                   ) : null}
                 </YStack>
+                {host?.sandbox && agent && talking[id] !== undefined ? (
+                  <AgentPanel
+                    open={!!talking[id]}
+                    vertical={paging}
+                    onHide={() => setTalking((t) => ({ ...t, [id]: false }))}
+                    run={(body, onFrame, signal) => agent(host, body, onFrame, signal)}
+                  />
+                ) : null}
+                </XStack>
               </YStack>
             );
           })}

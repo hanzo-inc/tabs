@@ -26,7 +26,7 @@ import { Workspace } from '@/components/workspace';
 export default function App() {
   const [token, setToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const { hosts, streams, read, error, mint, launch } = useFleet(token);
+  const { hosts, streams, read, error, mint, launch, agent } = useFleet(token);
   /** A sign-in that did not go through. The fleet's `error` is about the
    *  registry, which is a different failure with a different remedy. */
   const [refused, setRefused] = useState<string | null>(null);
@@ -162,6 +162,7 @@ export default function App() {
             // because a pane can only mint a ticket for a machine the registry
             // has already handed back.
             onLaunch={launch}
+            agent={agent}
           />
         ) : (
           <YStack flex={1} items="center" justify="center">
