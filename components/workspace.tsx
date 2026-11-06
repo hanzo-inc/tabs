@@ -153,6 +153,14 @@ function load(): Saved | null {
  * open later, with nothing to remember.
  */
 const SIZE_KEY = 'hanzo.tabs.size.v1';
+
+/** The host's menu asks the workspace for a pane by this event, and hears the
+ *  open panes by the other (@hanzo/app Sidebar). */
+const ACTION_EVENT = 'hanzo:tabs-action';
+const STATE_EVENT = 'hanzo:tabs-state';
+
+/** One thing the host's menu asks for. */
+type Action = { kind: 'shell' | 'desktop' | 'page' | 'cloud' | 'focus'; machine?: string; id?: string };
 const SIZE = { min: 8, max: 32, step: 1, default: 12 } as const;
 
 function clampSize(n: number): number {
@@ -397,6 +405,9 @@ export function Workspace({
     } catch {
       /* private mode or quota — a layout that cannot be saved still works today */
     }
+    // The host's menu lists the open panes from this. `storage` fires only in
+    // OTHER tabs, so the page that changed the layout says so itself.
+    window.dispatchEvent(new CustomEvent(STATE_EVENT, { detail: { bind } }));
   }, [tile, bind, ready]);
 
   const ids = useMemo(() => (tile ? paneIds(tile) : []), [tile]);
@@ -474,6 +485,18 @@ export function Workspace({
     },
     [onLaunch, open, settle, focus, shellOn, screenOn],
   );
+
+  /** What the host's menu asked for, answered by this render's buttons. A ref,
+   *  so the window listener is added once and still acts on current state. */
+  const act = useRef<(a: Action) => void>(() => {});
+  useEffect(() => {
+    const on = (e: Event) => {
+      const a = (e as CustomEvent<Action>).detail;
+      if (a && typeof a.kind === 'string') act.current(a);
+    };
+    window.addEventListener(ACTION_EVENT, on);
+    return () => window.removeEventListener(ACTION_EVENT, on);
+  }, []);
 
   const doClose = useCallback((id: string) => {
     setTile((t) => (t ? closePane(t, id) : null));
@@ -743,6 +766,64 @@ export function Workspace({
     setWaited(drop);
   }, []);
 
+  /** Never make someone choose from a set of one. */
+  const openHere = (make: (m: string) => Binding, from: TerminalHost[], dir: Dir | null, target: string | null) => {
+    if (from.length === 1) open(make(from[0]!.machine), dir, target);
+    else setPicking({ make, from, dir, target });
+  };
+
+  /** A shell goes on any live machine. */
+  const openShell = (dir: Dir | null, target: string | null) => openHere(shellOn, live, dir, target);
+
+  /** A page needs no machine, so it needs no picker and no mint — the pane
+   *  opens empty and the address is the whole of what it wants. */
+  const openPage = (dir: Dir | null, target: string | null) =>
+    open({ kind: 'page', url: '' }, dir, target);
+
+  /** A screen goes only where there IS one. With a launcher, "New desktop" is a
+   *  new desktop every press: one that reused the first live one made a second
+   *  press look like nothing happened. Without one, the screens that exist are
+   *  all there is. */
+  const openScreen = (dir: Dir | null, target: string | null) =>
+    onLaunch ? launch('desktop') : openHere(screenOn, watchable, dir, target);
+
+  /** A browser, the way its button makes one: a machine with a launcher, a
+   *  framed page without. */
+  const openBrowser = (dir: Dir | null, target: string | null) =>
+    onLaunch ? launch('browser') : openPage(dir, target);
+
+  /** The host's menu (@hanzo/app Sidebar) draws beside the workspace and holds
+   *  none of its state, so it asks by event: each kind is the button of the same
+   *  name, a machine names which one, and `focus` names a pane. A shell with no
+   *  machine to go on starts one, which is what a person asking for a terminal
+   *  on an empty workspace wants. */
+  useEffect(() => {
+    act.current = (a) => {
+      const dir = focus ? 'row' : null;
+      const on = a.machine ? live.find((h) => h.machine === a.machine) : undefined;
+      switch (a.kind) {
+        case 'shell':
+          if (on) open(shellOn(on.machine), dir, focus);
+          else if (live.length) openShell(dir, focus);
+          else if (onLaunch) launch('dev');
+          return;
+        case 'desktop':
+          if (on?.screen) open(screenOn(on.machine), dir, focus);
+          else openScreen(dir, focus);
+          return;
+        case 'page':
+          openBrowser(dir, focus);
+          return;
+        case 'cloud':
+          if (onLaunch) launch('dev');
+          return;
+        case 'focus':
+          if (a.id && bind[a.id]) setFocus(a.id);
+          return;
+      }
+    };
+  });
+
   if (live.length === 0 && !tile) {
     return (
       <YStack
@@ -770,32 +851,12 @@ export function Workspace({
           <XStack items="center" gap="$1.5">
             <Act run={() => launch('dev')} icon={<Cloud size={14} />} label="New cloud machine" />
             <Act run={() => launch('desktop')} icon={<Monitor size={14} />} label="New desktop" />
+            <Act run={() => launch('browser')} icon={<Globe size={14} />} label="New browser" />
           </XStack>
         ) : null}
       </YStack>
     );
   }
-
-  /** Never make someone choose from a set of one. */
-  const openHere = (make: (m: string) => Binding, from: TerminalHost[], dir: Dir | null, target: string | null) => {
-    if (from.length === 1) open(make(from[0]!.machine), dir, target);
-    else setPicking({ make, from, dir, target });
-  };
-
-  /** A shell goes on any live machine. */
-  const openShell = (dir: Dir | null, target: string | null) => openHere(shellOn, live, dir, target);
-
-  /** A page needs no machine, so it needs no picker and no mint — the pane
-   *  opens empty and the address is the whole of what it wants. */
-  const openPage = (dir: Dir | null, target: string | null) =>
-    open({ kind: 'page', url: '' }, dir, target);
-
-  /** A screen goes only where there IS one. With a launcher, "New desktop" is a
-   *  new desktop every press: one that reused the first live one made a second
-   *  press look like nothing happened. Without one, the screens that exist are
-   *  all there is. */
-  const openScreen = (dir: Dir | null, target: string | null) =>
-    onLaunch ? launch('desktop') : openHere(screenOn, watchable, dir, target);
 
   return (
     <YStack height="100%" width="100%" gap="$2.5" p="$3">
@@ -827,7 +888,7 @@ export function Workspace({
         {/* With a launcher, a browser is a machine: Chromium on a screen you watch and
             an agent can drive. A framed page is what a host with none can offer. */}
         <Act
-          run={() => (onLaunch ? launch('browser') : openPage(focus ? 'row' : null, focus))}
+          run={() => openBrowser(focus ? 'row' : null, focus)}
           icon={<Globe size={14} />}
           label={onLaunch ? 'New browser' : 'Browse'}
         />
