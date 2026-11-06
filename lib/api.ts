@@ -135,13 +135,27 @@ export const sandboxes = (token: string, origin = API) =>
  *  keyed on, so it is the name that means the same box tomorrow. */
 export const machineName = (s: SandboxMachine) => s.project || `cloud-${s.id.slice(0, 6)}`;
 
+/** The states in which a sandbox still holds its project's disk. The server
+ *  refuses a second lease on a project while one of these holds it (cloud
+ *  apps/sandbox `room`), and a PARKED one holds it too: a desktop that ran out
+ *  its lease keeps its disk, and is not in the running list. */
+const HOLDS = new Set(['running', 'pending', 'parked']);
+
+/** The names a new machine may not take: every project still held, not only the
+ *  ones running, or the press after a desktop parks asks for its name and is
+ *  refused every time. */
+const held = (token: string, origin = API) =>
+  read<{ sandboxes?: SandboxMachine[] }>('/v1/sandboxes', token, origin).then(
+    (r) => new Set((r.sandboxes ?? []).filter((s) => HOLDS.has(s.status)).map(machineName)),
+  );
+
 /** What a machine of each class is called, before its number. It says what the
  *  machine IS — one you shell into, one with a screen — where the name used to
  *  say which product opened it, so a workspace of three read `tabs`, `tabs-2`,
  *  `tabs-3` and told you nothing.
  *
  *  Two stems, not one, because the project keys the DISK and machines are
- *  counted against the ones RUNNING: a stopped `cloud-2` still owns its disk, so
+ *  counted against the ones holding a disk now: an ended `cloud-2` still owns its disk, so
  *  a desktop later handed that name would mount a shell machine's home and call
  *  it a screen. */
 const STEM: Record<Class, string> = { dev: 'cloud', desktop: 'desk', browser: 'web' };
@@ -158,8 +172,8 @@ export type Class = 'dev' | 'desktop' | 'browser';
  * Start one, and answer it once it is RUNNING.
  *
  * A sandbox is named by its project, and the project is what the disk is keyed
- * on: one live sandbox per project is the server's rule, so the name is picked
- * against what is already live rather than made up. That is what makes a second
+ * on: one sandbox per project is the server's rule, so the name is picked
+ * against what already holds one (`held`) rather than made up. That is what makes a second
  * press a second machine instead of a second attempt at the first one.
  *
  * The lease is the server's to set. Tabs has no opinion about how long a machine
@@ -171,7 +185,7 @@ export const createSandbox = async (
   kind: Class = 'dev',
   origin = API,
 ): Promise<SandboxMachine> => {
-  const taken = new Set((await sandboxes(token, origin)).map(machineName));
+  const taken = await held(token, origin);
   // Every machine carries its number, the first one included: `cloud` beside
   // `cloud-2` reads as a different kind of thing rather than the one before it.
   // The bound is the pigeonhole — among n machines, one of n+1 names is free.

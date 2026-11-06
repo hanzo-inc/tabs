@@ -222,6 +222,22 @@ describe('a new cloud machine', () => {
     expect(JSON.parse(String(post.init!.body)).project).toBe('cloud-3');
   });
 
+  it('counts past a PARKED machine, which still holds its disk, and not past an ended one', async () => {
+    // A desktop parks when its lease runs out and keeps its project. The server
+    // refuses that project to a second lease, parked or not, so taking the name
+    // again failed on every press.
+    answer(
+      [
+        { id: 'b1', status: 'parked', project: 'desk-1' },
+        { id: 'b2', status: 'error', project: 'desk-2' },
+      ],
+      { id: 'b3', status: 'running', project: 'desk-2' },
+    );
+    await createSandbox('t', 'desktop');
+    const post = calls.find((c) => c.init?.method === 'POST')!;
+    expect(JSON.parse(String(post.init!.body))).toEqual({ class: 'desktop', project: 'desk-2' });
+  });
+
   it("carries the server's reason, because a bare status code names none of them", async () => {
     answer([], { error: 'start sandbox: pod not running after 2m0s' }, false);
     await expect(createSandbox('t')).rejects.toThrow('pod not running after 2m0s');
