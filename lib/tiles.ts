@@ -84,6 +84,51 @@ export function splitPane(t: Tile, targetId: string, dir: Dir, newId: string): T
   };
 }
 
+/** How many members a run of `dir` splits holds. A pane, or a split the other
+ *  way, is one member: it is a box in that run, whatever is inside it. */
+const members = (t: Tile, dir: Dir): number =>
+  t.kind === 'split' && t.dir === dir ? members(t.a, dir) + members(t.b, dir) : 1;
+
+/** Give every member of the root's level an equal share of its axis.
+ *
+ * A level is the run of splits that share the root's direction: three columns
+ * are a split of one against a split of two, and nothing in the tree says they
+ * are one row except that both splits are `row`. Equal shares are therefore a
+ * ratio per split, each the fraction of the run's members on its `a` side, and
+ * the tree keeps its shape — only ratios change, so no pane moves in the DOM.
+ * A member that is itself split the other way keeps its inside as it was.
+ */
+export function balance(t: Tile): Tile {
+  if (t.kind === 'pane') return t;
+  const dir = t.dir;
+  const walk = (n: Tile): Tile => {
+    if (n.kind !== 'split' || n.dir !== dir) return n;
+    const a = members(n.a, dir);
+    return { ...n, ratio: a / (a + members(n.b, dir)), a: walk(n.a), b: walk(n.b) };
+  };
+  return walk(t);
+}
+
+/** Add `newId` as a new column at the end of the top level, and even the level.
+ *
+ * This is what New does, as against a split. A split divides the one pane it
+ * was asked of; New adds to the workspace, so the workspace makes room evenly —
+ * halving whichever pane happened to be last gave the third terminal a quarter
+ * of the screen. A layout stacked at the root becomes one column of the two.
+ *
+ * The column goes in at the far end of the run, so each seam divides one column
+ * from the ones after it: dragging the last seam moves the last two columns and
+ * leaves the others where they are.
+ */
+export function append(t: Tile | null, newId: string): Tile {
+  if (!t) return pane(newId);
+  const end = (n: Tile): Tile =>
+    n.kind === 'split' && n.dir === 'row'
+      ? { ...n, b: end(n.b) }
+      : { kind: 'split', dir: 'row', ratio: 0.5, a: n, b: pane(newId) };
+  return balance(end(t));
+}
+
 /** Remove a pane. Its sibling takes the space, which is what a tree is for.
  *
  * Returns `null` when the last pane goes — an empty layout is a real state (no
@@ -157,7 +202,17 @@ export interface Divider {
   top: number;
   width: number;
   height: number;
+  /** Where the split it resizes starts on its axis, and how long it is, in
+   *  percent. A nested split's ratio is a share of ITS extent, not of the
+   *  container's, so a drag is read against these. */
+  from: number;
+  size: number;
 }
+
+/** The ratio a divider takes when dragged to `at`, a percent of the container
+ *  along the divider's axis. */
+export const ratioAt = (d: Pick<Divider, 'from' | 'size'>, at: number): number =>
+  d.size > 0 ? (at - d.from) / d.size : 0.5;
 
 export interface Geometry {
   rects: Rect[];
@@ -181,12 +236,12 @@ export function geometry(t: Tile): Geometry {
       walk(n.b, [...path, 'b'], left + aw, top, w - aw, h);
       // The divider straddles the seam; its thickness is the renderer's, so it
       // is given a zero extent on the axis it splits and offset in CSS.
-      dividers.push({ path, dir: n.dir, left: left + aw, top, width: 0, height: h });
+      dividers.push({ path, dir: n.dir, left: left + aw, top, width: 0, height: h, from: left, size: w });
     } else {
       const ah = h * r;
       walk(n.a, [...path, 'a'], left, top, w, ah);
       walk(n.b, [...path, 'b'], left, top + ah, w, h - ah);
-      dividers.push({ path, dir: n.dir, left, top: top + ah, width: w, height: 0 });
+      dividers.push({ path, dir: n.dir, left, top: top + ah, width: w, height: 0, from: top, size: h });
     }
   };
 
@@ -269,7 +324,7 @@ export function pageGeometry(t: Tile, maxStack: number): PageGeometry {
     const ah = h * r;
     place(n.a, [...path, 'a'], pg, top, ah);
     place(n.b, [...path, 'b'], pg, top + ah, h - ah);
-    dividers.push({ path, dir: 'col', left: pg * 100, top: top + ah, width: 100, height: 0 });
+    dividers.push({ path, dir: 'col', left: pg * 100, top: top + ah, width: 100, height: 0, from: top, size: h });
   };
 
   next = 1;

@@ -77,14 +77,16 @@ import {
 } from '../lib/panes';
 import {
   type Dir,
+  type Divider,
   type Geometry,
-  type Path,
   type Tile,
+  append,
   closePane,
   geometry,
   pageGeometry,
   pane,
   paneIds,
+  ratioAt,
   setRatio,
   splitPane,
   stableOrder,
@@ -161,6 +163,18 @@ const STATE_EVENT = 'hanzo:tabs-state';
 
 /** One thing the host's menu asks for. */
 type Action = { kind: 'shell' | 'desktop' | 'page' | 'cloud' | 'focus'; machine?: string; id?: string };
+
+/** The class of cloud machine a launcher starts. */
+type Kind = 'dev' | 'desktop' | 'browser';
+
+/** Where a new pane goes: splitting `target` in `dir`, or — null — a new column
+ *  at the top level, the level evened to make room (`append`). */
+type At = { dir: Dir; target: string } | null;
+
+/** The terminal's face, @hanzo/font's mono first. One constant, because the
+ *  workspace tells a terminal its type in two places and they must not differ. */
+const MONO = "'Zen Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace";
+
 const SIZE = { min: 8, max: 32, step: 1, default: 12 } as const;
 
 function clampSize(n: number): number {
@@ -444,13 +458,14 @@ export function Workspace({
   );
   const screenOn = useCallback((machine: string): Binding => ({ kind: 'screen', machine }), []);
 
-  /** Open a NEW pane showing `what`, beside `target` — or as the whole layout.
-   *  Answers with the pane's id, so a caller still waiting on what goes in it
-   *  can settle that one box later. */
-  const open = useCallback((what: Binding, dir: Dir | null, target: string | null) => {
+  /** Open a NEW pane showing `what`: splitting `at.target`, which divides that
+   *  pane's space and no other, or — with no `at` — as a new column, every
+   *  column made equal. Answers with the pane's id, so a caller still waiting
+   *  on what goes in it can settle that one box later. */
+  const open = useCallback((what: Binding, at: At) => {
     const id = `p${seq.current++}`;
     setBind((b) => ({ ...b, [id]: what }));
-    setTile((t) => (t && target && dir ? splitPane(t, target, dir, id) : (t ?? pane(id))));
+    setTile((t) => (t && at ? splitPane(t, at.target, at.dir, id) : append(t, id)));
     setFocus(id);
     return id;
   }, []);
@@ -462,17 +477,15 @@ export function Workspace({
     setBind((b) => (b[id] ? { ...b, [id]: what } : b));
   }, []);
 
-  /** Start a machine and open it. The point of the button is what you get to
-   *  look at: a machine that arrives with nothing framed on it is a row in a
-   *  list, and you would have to go and ask for the thing you already asked for. */
-  const launch = useCallback(
-    (kind: 'dev' | 'desktop' | 'browser') => {
+  /** Start a machine for pane `id` and open it there. The point of the button
+   *  is what you get to look at: a machine that arrives with nothing framed on
+   *  it is a row in a list, and you would have to go and ask for the thing you
+   *  already asked for. */
+  const boot = useCallback(
+    (id: string, kind: Kind) => {
       if (!onLaunch) return;
       const want = kind === 'dev' ? 'shell' : 'screen';
-      // The pane opens on the CLICK, not on the answer. Provisioning is the
-      // long part, so waiting for it before drawing anything is a workspace
-      // that sits unchanged for the whole minute you are waiting.
-      const id = open({ kind: 'starting', want }, focus ? 'row' : null, focus);
+      settle(id, { kind: 'starting', want });
       onLaunch(kind)
         .then((machine) => settle(id, want === 'screen' ? screenOn(machine) : shellOn(machine)))
         .catch((e) =>
@@ -483,7 +496,19 @@ export function Workspace({
           }),
         );
     },
-    [onLaunch, open, settle, focus, shellOn, screenOn],
+    [onLaunch, settle, shellOn, screenOn],
+  );
+
+  /** A new pane, with a machine starting in it. The pane opens on the CLICK,
+   *  not on the answer: provisioning is the long part, so waiting for it before
+   *  drawing anything is a workspace that sits unchanged for the whole minute
+   *  you are waiting. */
+  const launch = useCallback(
+    (kind: Kind, at: At) => {
+      if (!onLaunch) return;
+      boot(open({ kind: 'starting', want: kind === 'dev' ? 'shell' : 'screen' }, at), kind);
+    },
+    [onLaunch, open, boot],
   );
 
   /** What the host's menu asked for, answered by this render's buttons. A ref,
@@ -543,7 +568,7 @@ export function Workspace({
   }, [paged, focus]);
 
   // ---- dragging a divider -------------------------------------------------
-  const [drag, setDrag] = useState<{ path: Path; dir: Dir } | null>(null);
+  const [drag, setDrag] = useState<Divider | null>(null);
   useEffect(() => {
     if (!drag) return;
     const move = (e: PointerEvent) => {
@@ -551,11 +576,13 @@ export function Workspace({
       if (!r || r.width === 0 || r.height === 0) return;
       // In the paged projection the track is `pages * 100%` wide and shifted, so a
       // horizontal drag is measured against ONE page, not the whole track.
-      const frac =
+      const at =
         drag.dir === 'row'
-          ? (e.clientX - r.left) / r.width
-          : (e.clientY - r.top) / r.height;
-      setTile((t) => (t ? setRatio(t, drag.path, frac) : t));
+          ? (100 * (e.clientX - r.left)) / r.width
+          : (100 * (e.clientY - r.top)) / r.height;
+      // The ratio is a share of the split's OWN extent: read against the whole
+      // box, a nested divider jumped away from the pointer on the first move.
+      setTile((t) => (t ? setRatio(t, drag.path, ratioAt(drag, at)) : t));
     };
     const up = () => setDrag(null);
     window.addEventListener('pointermove', move);
@@ -613,7 +640,7 @@ export function Workspace({
           el.contentWindow?.postMessage({
             source: 'hanzo-term',
             fontSize: size,
-            fontFamily: "'Geist Mono', 'Zen Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+            fontFamily: MONO,
           }, '*');
           return;
         }
@@ -637,7 +664,7 @@ export function Workspace({
         el?.contentWindow?.postMessage({
           source: 'hanzo-term',
           fontSize: size,
-          fontFamily: "'Geist Mono', 'Zen Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+          fontFamily: MONO,
         }, '*');
       }
     }
@@ -718,8 +745,9 @@ export function Workspace({
   const [picking, setPicking] = useState<null | {
     make: (m: string) => Binding;
     from: TerminalHost[];
-    dir: Dir | null;
-    target: string | null;
+    at: At;
+    /** What "New machine" starts, when the picker offers one. */
+    kind: Kind;
   }>(null);
   const rendered = useMemo(() => order.filter((id) => bind[id]), [order, bind]);
   /** The panes past what the plan streams. They are kept and shown, never minted. */
@@ -766,56 +794,62 @@ export function Workspace({
     setWaited(drop);
   }, []);
 
-  /** Never make someone choose from a set of one. */
-  const openHere = (make: (m: string) => Binding, from: TerminalHost[], dir: Dir | null, target: string | null) => {
-    if (from.length === 1) open(make(from[0]!.machine), dir, target);
-    else setPicking({ make, from, dir, target });
+  /** Never make someone choose from a set of one — and with no machine to
+   *  pick, a new one is the set of one. */
+  const openHere = (make: (m: string) => Binding, from: TerminalHost[], at: At, kind: Kind) => {
+    if (from.length === 1) open(make(from[0]!.machine), at);
+    else if (from.length === 0 && onLaunch) launch(kind, at);
+    else setPicking({ make, from, at, kind });
   };
 
   /** A shell goes on any live machine. */
-  const openShell = (dir: Dir | null, target: string | null) => openHere(shellOn, live, dir, target);
+  const openShell = (at: At) => openHere(shellOn, live, at, 'dev');
+
+  /** A split divides the pane it was asked of, and with a launcher what goes in
+   *  the new half is a NEW machine, unasked: a split is for another place to
+   *  work, and asking where it should run made every split a question. */
+  const split = (dir: Dir, target: string) =>
+    onLaunch ? launch('dev', { dir, target }) : openShell({ dir, target });
 
   /** A page needs no machine, so it needs no picker and no mint — the pane
    *  opens empty and the address is the whole of what it wants. */
-  const openPage = (dir: Dir | null, target: string | null) =>
-    open({ kind: 'page', url: '' }, dir, target);
+  const openPage = (at: At) => open({ kind: 'page', url: '' }, at);
 
   /** A screen goes only where there IS one. With a launcher, "New desktop" is a
    *  new desktop every press: one that reused the first live one made a second
    *  press look like nothing happened. Without one, the screens that exist are
    *  all there is. */
-  const openScreen = (dir: Dir | null, target: string | null) =>
-    onLaunch ? launch('desktop') : openHere(screenOn, watchable, dir, target);
+  const openScreen = (at: At) =>
+    onLaunch ? launch('desktop', at) : openHere(screenOn, watchable, at, 'desktop');
 
   /** A browser, the way its button makes one: a machine with a launcher, a
    *  framed page without. */
-  const openBrowser = (dir: Dir | null, target: string | null) =>
-    onLaunch ? launch('browser') : openPage(dir, target);
+  const openBrowser = (at: At) => (onLaunch ? launch('browser', at) : openPage(at));
 
   /** The host's menu (@hanzo/app Sidebar) draws beside the workspace and holds
    *  none of its state, so it asks by event: each kind is the button of the same
    *  name, a machine names which one, and `focus` names a pane. A shell with no
    *  machine to go on starts one, which is what a person asking for a terminal
-   *  on an empty workspace wants. */
+   *  on an empty workspace wants. Each is New, as the buttons are: a column, the
+   *  columns evened. */
   useEffect(() => {
     act.current = (a) => {
-      const dir = focus ? 'row' : null;
       const on = a.machine ? live.find((h) => h.machine === a.machine) : undefined;
       switch (a.kind) {
         case 'shell':
-          if (on) open(shellOn(on.machine), dir, focus);
-          else if (live.length) openShell(dir, focus);
-          else if (onLaunch) launch('dev');
+          if (on) open(shellOn(on.machine), null);
+          else if (live.length) openShell(null);
+          else if (onLaunch) launch('dev', null);
           return;
         case 'desktop':
-          if (on?.screen) open(screenOn(on.machine), dir, focus);
-          else openScreen(dir, focus);
+          if (on?.screen) open(screenOn(on.machine), null);
+          else openScreen(null);
           return;
         case 'page':
-          openBrowser(dir, focus);
+          openBrowser(null);
           return;
         case 'cloud':
-          if (onLaunch) launch('dev');
+          if (onLaunch) launch('dev', null);
           return;
         case 'focus':
           if (a.id && bind[a.id]) setFocus(a.id);
@@ -849,9 +883,9 @@ export function Workspace({
             at all is exactly who has nowhere else to get one. */}
         {onLaunch ? (
           <XStack items="center" gap="$1.5">
-            <Act run={() => launch('dev')} icon={<Cloud size={14} />} label="New cloud machine" />
-            <Act run={() => launch('desktop')} icon={<Monitor size={14} />} label="New desktop" />
-            <Act run={() => launch('browser')} icon={<Globe size={14} />} label="New browser" />
+            <Act run={() => launch('dev', null)} icon={<Cloud size={14} />} label="New cloud machine" />
+            <Act run={() => launch('desktop', null)} icon={<Monitor size={14} />} label="New desktop" />
+            <Act run={() => launch('browser', null)} icon={<Globe size={14} />} label="New browser" />
           </XStack>
         ) : null}
       </YStack>
@@ -864,7 +898,7 @@ export function Workspace({
       <XStack shrink={0} items="center" gap="$2">
         {start}
         <Act
-          run={() => openShell(focus ? 'row' : null, focus)}
+          run={() => openShell(null)}
           icon={<Plus size={14} />}
           label="New shell"
         />
@@ -873,14 +907,14 @@ export function Workspace({
             way to look at it. */}
         {watchable.length || onLaunch ? (
           <Act
-            run={() => openScreen(focus ? 'row' : null, focus)}
+            run={() => openScreen(null)}
             icon={<Monitor size={14} />}
             label={onLaunch ? 'New desktop' : 'Desktop'}
           />
         ) : null}
         {onLaunch && watchable.length ? (
           <Act
-            run={() => openHere(screenOn, watchable, focus ? 'row' : null, focus)}
+            run={() => openHere(screenOn, watchable, null, 'desktop')}
             icon={<Monitor size={14} />}
             label="Open desktop"
           />
@@ -888,13 +922,13 @@ export function Workspace({
         {/* With a launcher, a browser is a machine: Chromium on a screen you watch and
             an agent can drive. A framed page is what a host with none can offer. */}
         <Act
-          run={() => openBrowser(focus ? 'row' : null, focus)}
+          run={() => openBrowser(null)}
           icon={<Globe size={14} />}
           label={onLaunch ? 'New browser' : 'Browse'}
         />
         {onLaunch ? (
           <Act
-            run={() => launch('dev')}
+            run={() => launch('dev', null)}
             icon={<Cloud size={14} />}
             label="New cloud machine"
           />
@@ -947,7 +981,7 @@ export function Workspace({
           <Button
             variant="outline"
             size="sm"
-            onPress={() => focus && openShell('row', focus)}
+            onPress={() => focus && split('row', focus)}
             disabled={!focus}
             title="Split right"
           >
@@ -957,7 +991,7 @@ export function Workspace({
           <Button
             variant="outline"
             size="sm"
-            onPress={() => focus && openShell('col', focus)}
+            onPress={() => focus && split('col', focus)}
             disabled={!focus}
             title="Split down"
           >
@@ -1123,10 +1157,10 @@ export function Workspace({
                   ) : null}
                   {paging ? null : (
                     <XStack ml="auto" items="center" gap="$1">
-                      <Chip run={() => openShell('row', id)} title="Split right">
+                      <Chip run={() => split('row', id)} title="Split right">
                         <Columns2 size={14} />
                       </Chip>
-                      <Chip run={() => openShell('col', id)} title="Split down">
+                      <Chip run={() => split('col', id)} title="Split down">
                         <Rows2 size={14} />
                       </Chip>
                     </XStack>
@@ -1197,6 +1231,7 @@ export function Workspace({
                             [id]: { kind: 'shell', shell: { machine: m, name: mintName(takenOn(m)) } },
                           }))
                         }
+                        onNew={onLaunch ? () => boot(id, 'dev') : undefined}
                         onCancel={() => doClose(id)}
                       />
                     </Cover>
@@ -1331,7 +1366,7 @@ export function Workspace({
                 onPointerDown={(e: ReactPointerEvent<HTMLElement>) => {
                   e.preventDefault();
                   e.currentTarget.setPointerCapture?.(e.pointerId);
-                  setDrag({ path: d.path, dir: d.dir });
+                  setDrag(d);
                 }}
                 group
                 role="separator"
@@ -1398,9 +1433,17 @@ export function Workspace({
             <Picker
               hosts={picking.from}
               onPick={(m) => {
-                open(picking.make(m), picking.dir, picking.target);
+                open(picking.make(m), picking.at);
                 setPicking(null);
               }}
+              onNew={
+                onLaunch
+                  ? () => {
+                      launch(picking.kind, picking.at);
+                      setPicking(null);
+                    }
+                  : undefined
+              }
               onCancel={() => setPicking(null)}
             />
           </YStack>
@@ -1427,14 +1470,17 @@ function Act({ run, icon, label }: { run: () => void; icon: ReactNode; label: st
   );
 }
 
-/** Where should this shell run? Only ever shown when there is a real choice. */
+/** Where should this shell run? Only ever shown when there is a real choice,
+ *  and a new machine, where one can be started, is the first of them. */
 function Picker({
   hosts,
   onPick,
+  onNew,
   onCancel,
 }: {
   hosts: TerminalHost[];
   onPick: (machine: string) => void;
+  onNew?: () => void;
   onCancel: () => void;
 }) {
   return (
@@ -1451,6 +1497,24 @@ function Picker({
         Where should this shell run?
       </SizableText>
       <YStack render="ul" gap="$1">
+        {onNew ? (
+          <YStack render="li">
+            <Button
+              variant="ghost"
+              width="100%"
+              minH={44}
+              justify="flex-start"
+              gap="$2"
+              px="$2"
+              onPress={onNew}
+            >
+              <Cloud size={14} color="var(--muted-foreground)" />
+              <SizableText size="$2" numberOfLines={1} ellipsis>
+                New machine
+              </SizableText>
+            </Button>
+          </YStack>
+        ) : null}
         {hosts.map((h) => (
           <YStack key={h.machine} render="li">
             <Button
