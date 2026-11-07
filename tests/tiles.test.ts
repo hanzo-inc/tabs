@@ -1,6 +1,8 @@
 import {
   MAX_RATIO,
   MIN_RATIO,
+  append,
+  balance,
   closePane,
   hasPane,
   geometry,
@@ -8,6 +10,7 @@ import {
   pageGeometry,
   pane,
   paneIds,
+  ratioAt,
   retain,
   setRatio,
   splitPane,
@@ -186,6 +189,88 @@ describe('geometry is derived, so the panes can stay put in the DOM', () => {
     // Dragging it must resize the INNER split, not the root.
     const after = setRatio(t, inner.path, 0.2) as Extract<Tile, { kind: 'split' }>;
     expect(after.ratio).toBe(0.5);
+    expect(after.b).toMatchObject({ ratio: 0.2 });
+  });
+});
+
+describe('New makes room evenly; a split divides only its pane', () => {
+  const widths = (t: Tile) =>
+    Object.fromEntries(geometry(t).rects.map((r) => [r.id, Math.round(r.width * 1000) / 1000]));
+
+  it('New on an empty workspace is the whole of it', () => {
+    expect(append(null, 'a')).toEqual(pane('a'));
+  });
+
+  it('1 → 2 → 3 → 4 columns from New are equal every time — never half of the last', () => {
+    let t = append(null, 'a');
+    t = append(t, 'b');
+    expect(widths(t)).toEqual({ a: 50, b: 50 });
+    t = append(t, 'c');
+    expect(widths(t)).toEqual({ a: 33.333, b: 33.333, c: 33.333 });
+    t = append(t, 'd');
+    expect(widths(t)).toEqual({ a: 25, b: 25, c: 25, d: 25 });
+    expect(paneIds(t)).toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  it('a split right divides that pane alone, whichever pane it is', () => {
+    let t = append(append(append(null, 'a'), 'b'), 'c');
+    t = splitPane(t, 'b', 'row', 'n');
+    expect(widths(t)).toEqual({ a: 33.333, b: 16.667, n: 16.667, c: 33.333 });
+    expect(paneIds(t)).toEqual(['a', 'b', 'n', 'c']);
+  });
+
+  it('a split down divides that pane alone, and its column keeps its width', () => {
+    let t = append(append(append(null, 'a'), 'b'), 'c');
+    t = splitPane(t, 'c', 'col', 'n');
+    const r = Object.fromEntries(geometry(t).rects.map((x) => [x.id, x]));
+    expect(r.c).toMatchObject({ top: 0, height: 50 });
+    expect(r.n).toMatchObject({ top: 50, height: 50 });
+    expect(Math.round(r.n!.left * 1000) / 1000).toBe(66.667);
+    expect(widths(t)).toEqual({ a: 33.333, b: 33.333, c: 33.333, n: 33.333 });
+    expect(r.a).toMatchObject({ top: 0, height: 100 });
+  });
+
+  it('New after a split evens the columns, and a stacked column counts as one', () => {
+    let t = append(append(null, 'a'), 'b');
+    t = splitPane(t, 'b', 'col', 'n');
+    t = append(t, 'c');
+    expect(widths(t)).toEqual({ a: 33.333, b: 33.333, n: 33.333, c: 33.333 });
+    const r = Object.fromEntries(geometry(t).rects.map((x) => [x.id, x]));
+    expect(r.b).toMatchObject({ height: 50 });
+  });
+
+  it('a layout stacked at the root becomes one column of two', () => {
+    const t = append(splitPane(pane('a'), 'a', 'col', 'b'), 'c');
+    expect(widths(t)).toEqual({ a: 50, b: 50, c: 50 });
+    expect(t).toMatchObject({ kind: 'split', dir: 'row', ratio: 0.5 });
+  });
+
+  it('balance changes ratios only: the same panes, in the same order', () => {
+    let t: Tile = splitPane(pane('a'), 'a', 'row', 'b');
+    t = splitPane(t, 'b', 'row', 'c');
+    t = setRatio(t, [], 0.8);
+    const even = balance(t);
+    expect(paneIds(even)).toEqual(paneIds(t));
+    expect(widths(even)).toEqual({ a: 33.333, b: 33.333, c: 33.333 });
+    expect(balance(pane('a'))).toEqual(pane('a'));
+  });
+
+  it("a nested divider drags against its own split's extent, so it stays under the pointer", () => {
+    const t = append(append(append(null, 'a'), 'b'), 'c');
+    // The second seam sits at 66.7%; dragging it to 75% must put it at 75%,
+    // moving the two columns beside it and not the first.
+    const seam = geometry(t).dividers.find((d) => Math.round(d.left) === 67)!;
+    const moved = setRatio(t, seam.path, ratioAt(seam, 75));
+    expect(widths(moved)).toEqual({ a: 33.333, b: 41.667, c: 25 });
+    expect(geometry(moved).dividers.map((d) => Math.round(d.left * 1000) / 1000).sort()).toEqual([33.333, 75]);
+  });
+
+  it('a stacked divider on a phone page drags against its page height', () => {
+    const t = splitPane(splitPane(pane('a'), 'a', 'col', 'b'), 'b', 'col', 'c');
+    const g = pageGeometry(t, 3);
+    const inner = g.dividers.find((d) => d.path.length === 1)!;
+    expect(inner).toMatchObject({ from: 50, size: 50 });
+    const after = setRatio(t, inner.path, ratioAt(inner, 60)) as Extract<Tile, { kind: 'split' }>;
     expect(after.b).toMatchObject({ ratio: 0.2 });
   });
 });
