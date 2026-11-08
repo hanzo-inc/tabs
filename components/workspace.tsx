@@ -65,11 +65,13 @@ import {
   Plus,
   RotateCw,
   Rows2,
+  SquareTerminal,
   X,
 } from 'lucide-react';
 import { Button, Input, Paragraph, SizableText, XStack, YStack } from '@hanzo/ui';
 
 import { AgentPanel } from './agent';
+import { FRAME, frameFilter, useScheme } from '../lib/scheme';
 import type { AgentFrame, AgentTurn } from '../lib/api';
 
 import {
@@ -627,6 +629,7 @@ export function Workspace({
   const frames = useRef<Record<string, HTMLIFrameElement | null>>({});
 
   const [size, setSize] = useState(loadSize);
+  const scheme = useScheme();
 
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
@@ -899,7 +902,7 @@ export function Workspace({
         {start}
         <Act
           run={() => openShell(null)}
-          icon={<Plus size={14} />}
+          icon={<SquareTerminal size={14} />}
           label="New shell"
         />
         {/* One button starts a desktop. A second, only while one is live, opens a
@@ -1050,7 +1053,7 @@ export function Workspace({
         rounded="$4"
         borderWidth={1}
         borderColor="$borderColor"
-        bg="black"
+        bg={FRAME[scheme].ground}
       >
         <YStack
           position="absolute"
@@ -1179,7 +1182,7 @@ export function Workspace({
                 </XStack>
 
                 <XStack flex={1} minH={0} flexDirection={paging ? 'column' : 'row'}>
-                <YStack position="relative" flex={1} minH={0} bg="black">
+                <YStack position="relative" flex={1} minH={0} bg={FRAME[scheme].ground}>
                   {url ? (
                     <iframe
                       data-pane={id}
@@ -1199,8 +1202,8 @@ export function Workspace({
                         width: '100%',
                         height: '100%',
                         border: 0,
-                        background: '#000',
-                        filter: on ? undefined : 'brightness(0.65)',
+                        background: FRAME[scheme].ground,
+                        filter: frameFilter(scheme, on),
                       }}
                     />
                   ) : null}
@@ -1331,7 +1334,7 @@ export function Workspace({
                     // and the URL cannot be reopened, only asked for again.
                     // NEVER a sign-in here: the mint IS the sign-in, and sending
                     // someone to a second one is what this stopped doing.
-                    <Cover gap="$3" bg="black">
+                    <Cover gap="$3" bg={FRAME[scheme].ground}>
                       <Note>
                         {b.kind === 'screen' ? 'The desktop' : 'The terminal'} did not come up.
                         Reconnecting asks for a fresh credential and tries again.
