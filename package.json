@@ -1,6 +1,6 @@
 {
   "name": "@hanzo/tabs",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "license": "MIT",
   "description": "Keep tabs on your agents. A browser terminal workspace for machines you have linked — the app at tabs.hanzo.ai, and the component its other hosts mount.",
   "scripts": {
@@ -49,6 +49,7 @@
     "lib/fleet.ts",
     "lib/panes.ts",
     "lib/plan.ts",
+    "lib/scheme.ts",
     "lib/tiles.ts"
   ],
   "sideEffects": false,
