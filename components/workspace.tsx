@@ -380,35 +380,106 @@ export function Workspace({
   const [talking, setTalking] = useState<Record<string, boolean>>({});
   const [bind, setBind] = useState<Record<string, Binding>>({});
   const seq = useRef(0);
+  const initialSaved = useRef<Saved | null | undefined>(undefined);
   const [ready, setReady] = useState(false);
 
-  // Restore, or open the first machine's default shell. A saved pane whose machine
-  // is gone is KEPT and marked — tmux is still holding that session, and a layout
-  // is the reader's, not a function of someone else's uptime.
+  // Restore panes whose machines are actually live (or open pages), pruning
+  // stale/expired sandbox panes and aborted empty splits so a reload never dumps
+  // dead columns across the workspace. If no saved pane survives, open the first
+  // live machine's default shell.
   useEffect(() => {
-    if (ready) return;
-    const saved = load();
-    if (saved?.tree) {
-      seq.current = saved.seq ?? 0;
-      const known = new Set(live.map((h) => h.machine));
-      setBind(
-        Object.fromEntries(
-          Object.entries(saved.bind).map(([id, b]) => [
-            id,
-            b.kind === 'shell' && !known.has(b.shell.machine)
-              ? ({ kind: 'gone', shell: b.shell } as Binding)
-              : restore(b),
-          ]),
-        ),
-      );
-      setTile(saved.tree);
-    } else if (live[0]) {
-      const id = `p${seq.current++}`;
-      setBind({ [id]: { kind: 'shell', shell: { machine: live[0].machine, name: mintName([]) } } });
-      setTile(pane(id));
+    if (initialSaved.current === undefined) {
+      initialSaved.current = load();
     }
-    setReady(true);
-  }, [live, ready]);
+    const saved = initialSaved.current;
+    const known = new Set(live.map((h) => h.machine));
+
+    if (!ready) {
+      if (saved?.tree) {
+        seq.current = saved.seq ?? 0;
+        let nextTree: Tile | null = saved.tree;
+        const nextBind: Record<string, Binding> = {};
+        for (const [id, raw] of Object.entries(saved.bind)) {
+          const b = restore(raw);
+          if ((b.kind === 'shell' || b.kind === 'gone') && known.has(b.shell.machine)) {
+            nextBind[id] = { kind: 'shell', shell: b.shell };
+          } else if (b.kind === 'screen' && known.has(b.machine)) {
+            nextBind[id] = b;
+          } else if (b.kind === 'page' && b.url) {
+            nextBind[id] = b;
+          } else if (nextTree) {
+            nextTree = closePane(nextTree, id);
+          }
+        }
+        if (nextTree) {
+          setBind(nextBind);
+          setTile(nextTree);
+          initialSaved.current = null;
+        } else if (live[0]) {
+          const id = `p${seq.current++}`;
+          setBind({ [id]: { kind: 'shell', shell: { machine: live[0].machine, name: mintName([]) } } });
+          setTile(pane(id));
+          initialSaved.current = null;
+        }
+      } else if (live[0]) {
+        const id = `p${seq.current++}`;
+        setBind({ [id]: { kind: 'shell', shell: { machine: live[0].machine, name: mintName([]) } } });
+        setTile(pane(id));
+        initialSaved.current = null;
+      }
+      setReady(true);
+      return;
+    }
+
+    // If hosts arrived asynchronously after initial mount while the workspace is still empty,
+    // restore any matching panes from initialSaved or open the first live machine.
+    if (!tile && live.length > 0 && initialSaved.current !== undefined) {
+      if (saved?.tree) {
+        let nextTree: Tile | null = saved.tree;
+        const nextBind: Record<string, Binding> = {};
+        for (const [id, raw] of Object.entries(saved.bind)) {
+          const b = restore(raw);
+          if ((b.kind === 'shell' || b.kind === 'gone') && known.has(b.shell.machine)) {
+            nextBind[id] = { kind: 'shell', shell: b.shell };
+          } else if (b.kind === 'screen' && known.has(b.machine)) {
+            nextBind[id] = b;
+          } else if (b.kind === 'page' && b.url) {
+            nextBind[id] = b;
+          } else if (nextTree) {
+            nextTree = closePane(nextTree, id);
+          }
+        }
+        initialSaved.current = null;
+        if (nextTree) {
+          setBind(nextBind);
+          setTile(nextTree);
+          return;
+        }
+      }
+      initialSaved.current = null;
+      if (live[0]) {
+        const id = `p${seq.current++}`;
+        setBind({ [id]: { kind: 'shell', shell: { machine: live[0].machine, name: mintName([]) } } });
+        setTile(pane(id));
+        return;
+      }
+    }
+
+    // Revive any pane marked `gone` whose machine is now back in `live`.
+    setBind((prev) => {
+      let changed = false;
+      const next: Record<string, Binding> = {};
+      for (const [id, b] of Object.entries(prev)) {
+        if (b.kind === 'gone' && known.has(b.shell.machine)) {
+          next[id] = { kind: 'shell', shell: b.shell };
+          changed = true;
+        } else {
+          next[id] = b;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [live, ready, tile]);
 
   useEffect(() => {
     if (!ready) return;
@@ -1315,19 +1386,32 @@ export function Workspace({
                     )
                   ) : !url ? (
                     // No tunnel to frame — a box still coming up, or a link that
-                    // stopped serving. Both mean wait, and NEITHER is the OAuth
-                    // gate: without this the pane falls through to the rescue,
-                    // which offers to sign you in to a terminal at `#`.
-                    <Cover>
-                      <Note>
-                        Waiting for{' '}
-                        <SizableText size="$1" color="$color">
-                          {machine}
-                        </SizableText>{' '}
-                        to {b.kind === 'screen' ? 'show its screen' : 'serve a terminal'}. It
-                        appears here as soon as the machine is up.
-                      </Note>
-                    </Cover>
+                    // stopped serving. If the machine is offline or absent from
+                    // the fleet, offer to close the pane instead of waiting forever.
+                    !host || host.status === 'offline' ? (
+                      <Cover gap="$2">
+                        <Note>
+                          <SizableText size="$1" color="$color">
+                            {machine}
+                          </SizableText>{' '}
+                          is offline.
+                        </Note>
+                        <Button variant="outline" size="sm" onPress={() => doClose(id)}>
+                          Close pane
+                        </Button>
+                      </Cover>
+                    ) : (
+                      <Cover>
+                        <Note>
+                          Waiting for{' '}
+                          <SizableText size="$1" color="$color">
+                            {machine}
+                          </SizableText>{' '}
+                          to {b.kind === 'screen' ? 'show its screen' : 'serve a terminal'}. It
+                          appears here as soon as the machine is up.
+                        </Note>
+                      </Cover>
+                    )
                   ) : refused[id] ? (
                     // A frame that never said ready is a credential that no
                     // longer opens anything — a spent ticket, an aged session —
