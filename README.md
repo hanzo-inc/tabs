@@ -1,5 +1,7 @@
 # Hanzo Tabs
 
+[![Open in Hanzo](https://hanzo.app/badges/open-in-hanzo.svg)](https://hanzo.app/dev/open?repo=github.com/hanzo-inc/tabs&ref=main&action=open) [![Edit with Hanzo](https://hanzo.app/badges/edit-with-hanzo.svg)](https://hanzo.app/dev/open?repo=github.com/hanzo-inc/tabs&ref=main&action=edit) [![Deploy with Hanzo](https://hanzo.app/badges/deploy-with-hanzo.svg)](https://hanzo.app/dev/open?repo=github.com/hanzo-inc/tabs&ref=main&action=deploy)
+
 **Keep tabs on your agents.**
 
 Your coding agents work in shells on real machines. Tabs puts every one of those
