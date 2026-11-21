@@ -8,6 +8,9 @@ export default {
   output: 'export',
   trailingSlash: true,
   images: { unoptimized: true },
+  // The end-to-end suite's host page (app/e2e/page.e2e.tsx) is a route only in
+  // a build made for it, so the export that ships never carries it.
+  pageExtensions: process.env.TABS_E2E === '1' ? ['e2e.tsx', 'tsx', 'ts'] : ['tsx', 'ts'],
   // The gui packages ship untranspiled ESM resolved against react-native.
   transpilePackages: ['@hanzo/gui', '@hanzo/ui', 'react-native-web'],
   // @hanzo/ui renders through @hanzo/gui, which is React Native's component

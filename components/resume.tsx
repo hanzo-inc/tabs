@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react';
 
-import { session } from '@/lib/iam';
+import { session } from '../lib/iam';
 
 /**
  * A reader who already holds a session has no use for the front page: they came

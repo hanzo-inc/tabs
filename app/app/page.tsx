@@ -26,7 +26,7 @@ import { Workspace } from '@/components/workspace';
 export default function App() {
   const [token, setToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const { hosts, streams, read, error, mint, launch, stop, agent } = useFleet(token);
+  const { hosts, streams, read, error, mint, launch, stop, agent, account } = useFleet(token);
   /** A sign-in that did not go through. The fleet's `error` is about the
    *  registry, which is a different failure with a different remedy. */
   const [refused, setRefused] = useState<string | null>(null);
@@ -118,6 +118,7 @@ export default function App() {
             hosts={hosts}
             mint={mint}
             streams={streams}
+            account={account}
             // The brand and the way out ride in the workspace's action row.
             // They were a row of their own, which cost every pane ~28px of
             // terminal for two controls that fit in the gap beside the splits —

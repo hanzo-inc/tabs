@@ -18,6 +18,8 @@
  * scrollback is still there. There is no spawn endpoint because none is needed.
  */
 
+import { type Tile, closePane, paneIds } from './tiles';
+
 /** A machine that can serve shells: its name and the tunnel its terminals live on. */
 export interface TerminalHost {
   machine: string;
@@ -32,6 +34,8 @@ export interface TerminalHost {
   screen?: boolean;
   status: string;
   label?: string;
+  /** A cloud machine with no kept disk: stopping it deletes its files. */
+  temporary?: boolean;
 }
 
 /** A shell: which machine, and which tmux session on it. */
@@ -55,8 +59,6 @@ export type Binding =
    * survives a reload the way a shell name does.
    */
   | { kind: 'page'; url: string; }
-  /** Split made, machine not chosen yet. */
-  | { kind: 'empty' }
   /**
    * A machine is being STARTED for this pane, and does not exist yet.
    *
@@ -70,7 +72,13 @@ export type Binding =
   /** No machine came. The pane keeps the reason, and whether the reason was
    *  MONEY — because that one has a remedy the others do not, and a person out
    *  of credit still has a machine of their own to bring. */
-  | { kind: 'failed'; why: string; unfunded?: boolean }
+  | {
+      kind: 'failed';
+      why: string;
+      unfunded?: boolean;
+      /** What was being started, so the pane can offer to start it another way. */
+      start?: 'dev' | 'desktop' | 'browser';
+    }
   /** The machine went away. The pane STAYS, because tmux is still holding the
    *  session and the layout is the reader's, not a function of someone's uptime. */
   | { kind: 'gone'; shell: Shell };
@@ -92,22 +100,35 @@ export function label(b: Binding): string {
       return b.want === 'screen' ? 'Starting a desktop' : 'Starting a machine';
     case 'failed':
       return 'Could not start';
-    default:
-      return 'New shell';
   }
 }
 
 /**
- * What a saved pane becomes on the way back in.
+ * What a saved layout becomes on the way back in.
  *
- * A launch does not survive the page that asked for it: the promise died with
- * the tab, so a restored `starting` would spin for a machine nobody is waiting
- * on, and a restored `failed` would state a reason about a moment that has
- * passed. Both come back as the pane that asks — by then the machine may well
- * have finished starting, and it is in the list.
+ * A pane comes back only if it can show something: a shell or a screen on a
+ * machine that is live now (a `gone` shell is a shell again), or a page. A
+ * launch does not survive the page that asked for it — the promise died with
+ * the tab — so a saved `starting` or `failed` pane closes, as does a pane on a
+ * machine that is no longer there, or one whose binding this version does not
+ * know. Closing hands its space to its sibling, so nothing else moves.
  */
-export function restore(b: Binding): Binding {
-  return b.kind === 'starting' || b.kind === 'failed' ? { kind: 'empty' } : b;
+export function revive(
+  tree: Tile,
+  bind: Readonly<Record<string, unknown>>,
+  known: ReadonlySet<string>,
+): { tree: Tile | null; bind: Record<string, Binding> } {
+  let next: Tile | null = tree;
+  const kept: Record<string, Binding> = {};
+  for (const id of paneIds(tree)) {
+    const b = bind[id] as Binding | undefined;
+    if ((b?.kind === 'shell' || b?.kind === 'gone') && known.has(b.shell.machine)) {
+      kept[id] = { kind: 'shell', shell: b.shell };
+    } else if (b?.kind === 'screen' && known.has(b.machine)) kept[id] = b;
+    else if (b?.kind === 'page' && b.url) kept[id] = b;
+    else if (next) next = closePane(next, id);
+  }
+  return { tree: next, bind: kept };
 }
 
 /** The machine a pane is bound to, whichever way it is looking at it. */
@@ -202,20 +223,6 @@ export function host(url: string): string {
   }
 }
 
-/**
- * Whether a pane is one of OURS, and so owes us a word that it came up.
- *
- * The readiness contract below is a conversation between this workspace and
- * pages we serve. A page on the open web is in no such conversation: it will
- * never post `hanzo-term`, so a rescue keyed on silence covers every browser
- * pane six seconds after it loads — offering to reconnect a site that is
- * already on screen and working.
- *
- * So silence means "did not come up" only for a pane that promised to speak.
- */
-export function proves(b: Binding): boolean {
-  return b.kind === 'shell' || b.kind === 'screen' || b.kind === 'gone';
-}
 
 /** Status → the colour of the dot. The ONE map: session statuses first, then a
  * machine's.
@@ -238,6 +245,7 @@ export const DOT: Record<string, `var(--${string})` | `#${string}`> = {
   error: 'var(--destructive)',
   online: 'var(--state-online)',
   draining: AMBER,
+  pending: AMBER,
   offline: 'var(--text-disabled)',
 };
 
@@ -271,6 +279,36 @@ export const READY = ['hanzo-term', 'hanzo-screen'];
  *  still connecting, which would be its own defect. */
 export const DEADLINE = 6000;
 
+/** How long a frame may take to LOAD at all. DEADLINE is counted from the load,
+ *  because a frame still fetching its page has not had its chance to speak; this
+ *  is the backstop for one whose load never comes. */
+export const LOAD_LIMIT = 30_000;
+
+/** How long a machine this workspace has just started is given to bring its
+ *  terminal up. A new machine answers the start before its shell is serving, so
+ *  the first seconds of silence are it booting, not a failure. */
+export const ALLOWANCE = 90_000;
+
+
+/**
+ * The cloud machine that closing pane `id` would leave running in no pane at
+ * all, if any: the pane's machine, when no other pane shows it, and it is a
+ * cloud machine (`cloud` — the list says so, or this workspace started it,
+ * which covers one still pending and so not listed yet).
+ */
+export function orphaned(
+  id: string,
+  bind: Readonly<Record<string, Binding>>,
+  cloud: (machine: string) => boolean,
+): string | null {
+  const b = bind[id];
+  const m = b ? machineOf(b) : null;
+  if (!m || !cloud(m)) return null;
+  return Object.entries(bind).some(([k, o]) => k !== id && machineOf(o) === m) ? null : m;
+}
+
+
+
 /** Whether a posted message is one of our pages announcing itself. */
 export function isReady(data: unknown): boolean {
   return (
@@ -280,18 +318,22 @@ export function isReady(data: unknown): boolean {
   );
 }
 
-/** Panes that should show the way out: waited past the deadline, never heard
- *  from, and OURS to hear from (see `proves`). A pane that has not waited yet is
- *  absent, not false — it is still loading, and nothing should be drawn over it. */
-export function rescued(
-  waited: Record<string, boolean>,
-  alive: Record<string, boolean>,
-  proving: Record<string, boolean>,
-): Record<string, boolean> {
-  return Object.fromEntries(
-    Object.keys(waited)
-      .filter((id) => waited[id] && proving[id])
-      .map((id) => [id, !alive[id]]),
-  );
+/**
+ * Whether a message came from inside a frame: from the frame's own window, or
+ * from a window nested in it (a page that wraps its terminal in a frame of its
+ * own posts from there). Walked up by `parent`, which a cross-origin window
+ * still exposes, and stopped at our own window, so a message from anywhere else
+ * — another tab, another frame of ours — is never taken for this one.
+ */
+export function within(source: unknown, frame: unknown, self: unknown): boolean {
+  let w = source as { parent?: unknown } | null | undefined;
+  for (let depth = 0; w && depth < 8; depth++) {
+    if (w === frame) return true;
+    if (w === self || w.parent === w) return false;
+    w = w.parent as typeof w;
+  }
+  return false;
 }
+
+
 

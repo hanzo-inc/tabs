@@ -19,6 +19,8 @@
  * needs, and one more thing to be stale.
  */
 export { Workspace } from './components/workspace';
+export { type Kind, type StartAsk } from './lib/start';
+export { type Come, type ComeEvent, type Listed, begin, step } from './lib/comeup';
 
 /**
  * The wiring, so a host supplies a token and nothing else.
@@ -43,9 +45,7 @@ export {
   label,
   machineOf,
   mintName,
-  proves,
-  rescued,
-  restore,
+  revive,
   safeName,
   shellUrl,
   web,
@@ -83,5 +83,6 @@ export {
   machines,
   sandboxes,
   sessions,
+  signIn,
   unfunded,
 } from './lib/api';
