@@ -30,6 +30,7 @@ import {
   grant,
   machineName,
   machines,
+  pause,
   sandboxes,
   sessions,
 } from './api';
@@ -55,6 +56,8 @@ export interface Fleet {
   mint: (host: TerminalHost, what: Binding) => Promise<string>;
   /** Start a cloud box of one class and answer the name it goes by here. */
   launch: (kind: Class) => Promise<string>;
+  /** Stop a cloud box that is running and re-read, so it leaves the workspace. */
+  stop: (host: TerminalHost) => Promise<void>;
   /** Have the AI work a cloud box, a step at a time (cloud's sandbox agent). */
   agent: (
     host: TerminalHost,
@@ -199,6 +202,16 @@ export function useFleet(token: string | null, origin: string = API): Fleet {
     [token, origin, read],
   );
 
+  const stop = useCallback(
+    async (host: TerminalHost) => {
+      if (!token) throw new Error('signed out');
+      if (!host.sandbox) throw new Error('only a cloud machine can be stopped here');
+      await pause(token, host.sandbox, origin);
+      await read(token);
+    },
+    [token, origin, read],
+  );
+
   const agent = useCallback(
     async (
       host: TerminalHost,
@@ -213,5 +226,5 @@ export function useFleet(token: string | null, origin: string = API): Fleet {
     [token, origin],
   );
 
-  return { hosts, streams: data?.n ?? null, read: data !== null, error, mint, launch, agent, refresh };
+  return { hosts, streams: data?.n ?? null, read: data !== null, error, mint, launch, stop, agent, refresh };
 }

@@ -11,7 +11,7 @@
  * A tab is STREAMED when a pane holds a live shell or screen. A page, an empty
  * pane, a machine that is starting or gone holds no stream and counts for nothing.
  */
-import { API } from './api';
+import { API, READ_TIMEOUT } from './api';
 import type { Binding } from './panes';
 
 /** Where a person goes to change plan. */
@@ -21,6 +21,8 @@ export async function streams(token: string, origin = API): Promise<number | nul
   const res = await fetch(`${origin}/v1/entitlements`, {
     headers: { Authorization: `Bearer ${token}` },
     cache: 'no-store',
+    // Read beside the registry, so a hang here would hold the same skeleton.
+    signal: AbortSignal.timeout(READ_TIMEOUT),
   });
   if (!res.ok) return null;
   const body = (await res.json().catch(() => null)) as { tabs?: unknown } | null;
