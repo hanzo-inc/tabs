@@ -83,10 +83,17 @@ async function refusal(res: Response, fallback: string): Promise<Refusal> {
   return new Refusal(res.status, e?.code ?? '', e?.message || fallback);
 }
 
+/** How long a registry read may take. A request that never answers would
+ *  otherwise hold the workspace on its loading skeleton for good; past this it
+ *  fails, and `useFleet` reports it as the error with its retry. Well over the
+ *  plane's normal answer, so a slow read is not mistaken for a dead one. */
+export const READ_TIMEOUT = 15_000;
+
 async function read<T>(path: string, token: string, origin = API): Promise<T> {
   const res = await fetch(`${origin}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
     cache: 'no-store',
+    signal: AbortSignal.timeout(READ_TIMEOUT),
   });
   if (!res.ok) throw new Error(`${path} → ${res.status}`);
   return (await res.json()) as T;
@@ -218,6 +225,21 @@ export const createSandbox = async (
   // none of them, and the CODE is what lets the pane offer the right remedy.
   if (!res.ok) throw await refusal(res, `new machine → ${res.status}`);
   return (await res.json()) as SandboxMachine;
+};
+
+/**
+ * Park a running sandbox: it stops running (and being billed) and keeps its
+ * disk. The same call @hanzo/app's `parkComputer` makes for a desktop.
+ */
+export const pause = async (token: string, id: string, origin = API): Promise<void> => {
+  const res = await fetch(`${origin}/v1/sandbox/${encodeURIComponent(id)}/pause`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: '{}',
+    cache: 'no-store',
+    signal: AbortSignal.timeout(READ_TIMEOUT),
+  });
+  if (!res.ok) throw new Error(`stop machine → ${res.status}`);
 };
 
 /**

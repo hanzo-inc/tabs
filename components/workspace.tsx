@@ -333,6 +333,7 @@ export function Workspace({
   hosts,
   mint,
   onLaunch,
+  onStop,
   agent,
   streams = null,
   start,
@@ -352,6 +353,9 @@ export function Workspace({
   mint?: (host: TerminalHost, what: Binding) => Promise<string>;
   /** Start a cloud machine of one class, and answer the name it goes by here. */
   onLaunch?: (kind: 'dev' | 'desktop' | 'browser') => Promise<string>;
+  /** Stop a cloud machine. Absent, a pane that could not connect to one cannot
+   *  offer to stop it. */
+  onStop?: (host: TerminalHost) => Promise<void>;
   /** Have the AI work a cloud machine (cloud's sandbox agent). Absent, no pane offers it. */
   agent?: (
     host: TerminalHost,
@@ -812,6 +816,26 @@ export function Workspace({
     [bind],
   );
   const refused = useMemo(() => rescued(waited, alive, proving), [waited, alive, proving]);
+
+  // A cloud machine keeps running (and counting against the lease) when its pane
+  // fails to connect, so the failed pane says so and offers to stop it. Per
+  // machine, not per pane: two panes on one box share the answer.
+  const [stopping, setStopping] = useState<Record<string, true | string>>({});
+  const stop = useCallback(
+    (h: TerminalHost) => {
+      if (!onStop) return;
+      setStopping((s) => ({ ...s, [h.machine]: true }));
+      onStop(h)
+        .then(() => setStopping(({ [h.machine]: _done, ...rest }) => rest))
+        .catch((e) =>
+          setStopping((s) => ({
+            ...s,
+            [h.machine]: e instanceof Error ? e.message : 'could not stop the machine',
+          })),
+        );
+    },
+    [onStop],
+  );
 
   // A pick is "which machine", and what to MAKE of the one picked comes with
   // the question — so the same picker asks for a shell's machine and a
@@ -1426,6 +1450,25 @@ export function Workspace({
                       <Button variant="outline" minH={44} onPress={() => reconnect(id)}>
                         Reconnect
                       </Button>
+                      {host?.sandbox && onStop ? (
+                        <>
+                          <Note>
+                            {host.machine} is still running and counts against your plan until it
+                            is stopped.
+                          </Note>
+                          <Button
+                            variant="outline"
+                            minH={44}
+                            disabled={stopping[host.machine] === true}
+                            onPress={() => stop(host)}
+                          >
+                            {stopping[host.machine] === true ? 'Stopping…' : 'Stop machine'}
+                          </Button>
+                          {typeof stopping[host.machine] === 'string' ? (
+                            <Note>{stopping[host.machine]}</Note>
+                          ) : null}
+                        </>
+                      ) : null}
                     </Cover>
                   ) : null}
                 </YStack>
