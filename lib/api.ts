@@ -61,6 +61,21 @@ export class Refusal extends Error {
   }
 }
 
+/** Who a token belongs to: its `sub`, read and NOT verified. It only keys
+ *  what this browser remembers for that person, so a forged one changes
+ *  nothing but which questions are asked in a browser that already holds it. */
+export function subject(token: string | null): string | null {
+  const part = token?.split('.')[1];
+  if (!part) return null;
+  try {
+    const json = atob(part.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(part.length / 4) * 4, '='));
+    const sub = (JSON.parse(json) as { sub?: unknown }).sub;
+    return typeof sub === 'string' && sub ? sub : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Out of credit, or past the org's spend cap. Both are answered the same way —
  *  put money on it, or bring a machine of your own — so they are one question. */
 export const unfunded = (e: unknown): boolean =>
@@ -133,10 +148,16 @@ export interface SandboxMachine {
   class?: string;
 }
 
+/** The sandboxes to show: running, and pending — one still starting is a
+ *  machine the person asked for and is paying for, and leaving it out drew
+ *  its pane as offline with nothing to stop. */
 export const sandboxes = (token: string, origin = API) =>
-  read<{ sandboxes?: SandboxMachine[] }>('/v1/sandboxes?status=running', token, origin).then((r) =>
-    (r.sandboxes ?? []).filter((s) => s.status === 'running'),
-  );
+  listed(token, origin).then((all) => all.filter((s) => s.status === 'running' || s.status === 'pending'));
+
+/** Every sandbox the account has, in any state: the ONE read of the list, which
+ *  what is shown and which names are taken are both filters of. */
+const listed = (token: string, origin = API) =>
+  read<{ sandboxes?: SandboxMachine[] }>('/v1/sandboxes', token, origin).then((r) => r.sandboxes ?? []);
 
 /** How a sandbox names itself in the workspace. Its project is what its DISK is
  *  keyed on, so it is the name that means the same box tomorrow. */
@@ -152,9 +173,7 @@ const HOLDS = new Set(['running', 'pending', 'parked']);
  *  ones running, or the press after a desktop parks asks for its name and is
  *  refused every time. */
 const held = (token: string, origin = API) =>
-  read<{ sandboxes?: SandboxMachine[] }>('/v1/sandboxes', token, origin).then(
-    (r) => new Set((r.sandboxes ?? []).filter((s) => HOLDS.has(s.status)).map(machineName)),
-  );
+  listed(token, origin).then((all) => new Set(all.filter((s) => HOLDS.has(s.status)).map(machineName)));
 
 /** What a machine of each class is called, before its number. It says what the
  *  machine IS — one you shell into, one with a screen — where the name used to
@@ -191,38 +210,36 @@ export const createSandbox = async (
   token: string,
   kind: Class = 'dev',
   origin = API,
+  /** A machine with no project, so no disk that outlives it: its files are
+   *  gone when it stops. Only ever asked for by a person who chose it in those
+   *  words, never as a quiet stand-in for the machine they asked for. */
+  temporary = false,
 ): Promise<SandboxMachine> => {
-  const taken = await held(token, origin);
-  // Every machine carries its number, the first one included: `cloud` beside
-  // `cloud-2` reads as a different kind of thing rather than the one before it.
-  // The bound is the pigeonhole — among n machines, one of n+1 names is free.
-  const stem = STEM[kind];
-  let project = `${stem}-1`;
-  for (let n = 2; taken.has(project); n++) project = `${stem}-${n}`;
-  let res = await fetch(`${origin}/v1/sandboxes`, {
+  let body: { class: Class; project?: string } = { class: kind };
+  if (!temporary) {
+    const taken = await held(token, origin);
+    // Every machine carries its number, the first one included: `cloud` beside
+    // `cloud-2` reads as a different kind of thing rather than the one before it.
+    // The bound is the pigeonhole — among n machines, one of n+1 names is free.
+    const stem = STEM[kind];
+    let project = `${stem}-1`;
+    for (let n = 2; taken.has(project); n++) project = `${stem}-${n}`;
+    body = { class: kind, project };
+  }
+  const res = await fetch(`${origin}/v1/sandboxes`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ class: kind, project }),
+    body: JSON.stringify(body),
     cache: 'no-store',
   });
-  // If persistent project disk was rejected with 402 (payment required / unfunded),
-  // immediately fallback to a scratch sandbox without persistent project disk,
-  // so the user can run free ephemeral sandboxes and live desktops without interruption.
-  if (res.status === 402) {
-    const scratchRes = await fetch(`${origin}/v1/sandboxes`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ class: kind }),
-      cache: 'no-store',
-    });
-    if (scratchRes.ok) {
-      return (await scratchRes.json()) as SandboxMachine;
-    }
-  }
   // Starting a machine fails for reasons a person can act on — no credit, an
   // image that will not pull, a project already held, an org at its ceiling —
   // and the server says which. A bare status code next to the button would name
   // none of them, and the CODE is what lets the pane offer the right remedy.
+  //
+  // Out of credit is reported, never answered with a temporary machine in its
+  // place: that one keeps no files, and a person who was not told would lose
+  // their work when it stopped. The pane offers it as a choice instead.
   if (!res.ok) throw await refusal(res, `new machine → ${res.status}`);
   return (await res.json()) as SandboxMachine;
 };
@@ -273,12 +290,18 @@ export const grant = async (token: string, base: string): Promise<void> => {
     cache: 'no-store',
   });
   if (res.ok) return;
-  throw new Error(
-    res.type === 'opaqueredirect'
-      ? 'terminal grant → the tunnel asked for a sign-in'
-      : `terminal grant → ${res.status}`,
-  );
+  // A sign-in is a Refusal with its own code, because it is the one answer
+  // here a person can fix, by signing in to the machine in their browser.
+  if (res.type === 'opaqueredirect') {
+    throw new Refusal(res.status, SIGN_IN, 'terminal grant → the tunnel asked for a sign-in');
+  }
+  throw new Error(`terminal grant → ${res.status}`);
 };
+
+const SIGN_IN = 'sign_in';
+
+/** Whether a mint failed because the machine's tunnel wants a sign-in first. */
+export const signIn = (e: unknown): boolean => e instanceof Refusal && e.code === SIGN_IN;
 
 /** The two ways to look at a machine: its shell, or its screen. Same sandbox,
  *  same credential, two pages — see cloud's apps/sandbox. */
@@ -312,7 +335,11 @@ export const frameUrl = async (
   if (!res.ok) throw new Error(`${door} ticket → ${res.status}`);
   const body = (await res.json()) as { url?: string };
   if (!body.url) throw new Error(`${door} ticket → empty answer`);
-  return `${origin}${body.url}` + (arg ? `&arg=${encodeURIComponent(arg)}` : '');
+  // Parsed, not concatenated: `&arg=` on an address with no `?` lands in the
+  // path. `set` also keeps it to ONE arg, which a shell needs (see shellUrl).
+  const u = new URL(`${origin}${body.url}`);
+  if (arg) u.searchParams.set('arg', arg);
+  return u.toString();
 };
 
 /** One step of a sandbox agent's turn, as the stream says it (cloud apps/sandbox agent.go). */

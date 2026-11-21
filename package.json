@@ -1,6 +1,6 @@
 {
   "name": "@hanzo/tabs",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "license": "MIT",
   "description": "Keep tabs on your agents. A browser terminal workspace for machines you have linked — the app at tabs.hanzo.ai, and the component its other hosts mount.",
   "scripts": {
@@ -9,7 +9,7 @@
     "start": "next start",
     "test": "jest",
     "typecheck": "tsc --noEmit",
-    "test:surface": "next build --webpack && playwright test"
+    "test:surface": "TABS_E2E=1 next build --webpack && playwright test"
   },
   "devDependencies": {
     "@hanzo/design": "catalog:",
@@ -42,15 +42,9 @@
   "files": [
     "LICENSE",
     "README.md",
-    "components/agent.tsx",
-    "components/workspace.tsx",
     "index.ts",
-    "lib/api.ts",
-    "lib/fleet.ts",
-    "lib/panes.ts",
-    "lib/plan.ts",
-    "lib/scheme.ts",
-    "lib/tiles.ts"
+    "components/*.tsx",
+    "lib/*.ts"
   ],
   "sideEffects": false,
   "peerDependencies": {

@@ -1,7 +1,4 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-
-import { API, Refusal, createSandbox, frameUrl, grant, machineName, unfunded } from '@/lib/api';
+import { API, Refusal, createSandbox, frameUrl, grant, machineName, sandboxes, subject, unfunded } from '@/lib/api';
 
 /**
  * A sandbox joins the workspace as a machine whose URLs are MINTED, not
@@ -104,50 +101,49 @@ describe('the grant on a linked machine', () => {
   });
 });
 
-describe('the workspace mints once per pane', () => {
-  const src = readFileSync(join(process.cwd(), 'components/workspace.tsx'), 'utf8');
-
-  it('stores the minted URL as pane state, never re-derives it per render', () => {
-    // A ticket is spent by the frame's first load; deriving the URL on render
-    // would hand the iframe a dead credential on the next paint.
-    expect(src).toContain('minted[id] ?? null');
-    expect(src).toContain('minting.current.has(id)');
+describe('the list of sandboxes', () => {
+  it('is one read of every sandbox, showing the running and the pending, not the parked', async () => {
+    const urls: string[] = [];
+    global.fetch = (async (u: string) => {
+      urls.push(String(u));
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          sandboxes: [
+            { id: 'a', status: 'running' },
+            { id: 'b', status: 'pending' },
+            { id: 'c', status: 'parked' },
+          ],
+        }),
+      };
+    }) as unknown as typeof fetch;
+    expect((await sandboxes('t')).map((s) => s.id)).toEqual(['a', 'b']);
+    expect(urls).toEqual([`${API}/v1/sandboxes`]);
   });
 
-  it('has ONE source for a pane URL, whichever kind of machine serves it', () => {
-    // The workspace used to fork: minted for a sandbox, derived from the
-    // published tunnel for a linked machine — which is what left the linked
-    // one framing a URL nobody had authorised, and a person staring at a
-    // second sign-in. Both are minted now, so there is one path to be right.
-    //
-    // A page is the one pane with no machine and so no credential: its url IS
-    // its binding. That is a different question, not a second answer to this
-    // one — every pane that has a machine still reads the mint and nothing else.
-    expect(src).toContain("b.kind === 'page' ? b.url : (minted[id] ?? null)");
-    expect(src).not.toContain('shellUrl(');
-    expect(src).not.toMatch(/host\?\.sandbox\s*\?/);
+  it('is the same read a new machine names itself against', async () => {
+    const urls: string[] = [];
+    global.fetch = (async (u: string, init?: RequestInit) => {
+      urls.push(`${init?.method ?? 'GET'} ${u}`);
+      return { ok: true, status: 201, json: async () => (init?.method === 'POST' ? { id: 'n' } : { sandboxes: [] }) };
+    }) as unknown as typeof fetch;
+    await createSandbox('t');
+    expect(urls).toEqual([`GET ${API}/v1/sandboxes`, `POST ${API}/v1/sandboxes`]);
   });
+});
 
-  it('reconnect forgets the spent URL AND the readiness history', () => {
-    expect(src).toContain('setMinted(drop)');
-    expect(src).toContain('setAlive(drop)');
-    expect(src).toContain('setWaited(drop)');
+describe('whose token it is', () => {
+  const jwt = (payload: unknown) =>
+    `h.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.s`;
+  it('reads the subject of a token', () => {
+    expect(subject(jwt({ sub: 'user-1' }))).toBe('user-1');
   });
-
-  it('a refused pane offers a re-mint, and NEVER a second sign-in', () => {
-    // The one rescue, for every pane. A dead credential cannot be reopened in a
-    // tab, only asked for again — and sending someone to sign in a second time,
-    // as the same person, on another domain, is the defect this replaced.
-    expect(src).toMatch(/refused\[id\] \?[\s\S]*?Reconnect/);
-    expect(src).not.toMatch(/Sign in to this terminal/);
-    expect(src).not.toMatch(/target="_blank"/);
-  });
-
-  it('offers that rescue when the URL never arrived, not only when the frame died', () => {
-    // A mint that fails leaves no iframe, so nothing is ever probed and the
-    // readiness deadline never fires. Without this the pane says "waiting"
-    // forever about a terminal nobody is going to bring.
-    expect(src).toMatch(/\.catch\(\(\) => setWaited\(/);
+  it('is nobody for a token that is not a JWT, or has no subject', () => {
+    expect(subject('stand-in-token')).toBeNull();
+    expect(subject(null)).toBeNull();
+    expect(subject(jwt({ name: 'x' }))).toBeNull();
+    expect(subject('h.%%%.s')).toBeNull();
   });
 });
 
@@ -276,6 +272,23 @@ describe('a new cloud machine', () => {
     const e = await createSandbox('t').catch((x) => x);
     expect(e.message).toContain('pod not running');
     expect(unfunded(e)).toBe(false);
+  });
+
+  it('out of credit is REPORTED, never swapped for a machine that keeps no files', async () => {
+    // It used to retry at once without a project — a temporary machine whose
+    // files are lost when it stops — and say nothing.
+    answer([], { error: { code: 'insufficient_balance', message: 'no credit' } }, false, 402);
+    const e = await createSandbox('t').catch((x) => x);
+    expect(unfunded(e)).toBe(true);
+    expect(calls.filter((c) => c.init?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('asks for a temporary machine only when told to, with no project and so no kept disk', async () => {
+    answer([], { id: 'b9', status: 'running' });
+    await createSandbox('t', 'desktop', API, true);
+    const posts = calls.filter((c) => c.init?.method === 'POST');
+    expect(posts).toHaveLength(1);
+    expect(JSON.parse(String(posts[0]!.init!.body))).toEqual({ class: 'desktop' });
   });
 
   it('never sends the bearer to anything but the API', async () => {

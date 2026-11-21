@@ -50,6 +50,9 @@ jobs:
           # The component sheet is what makes the page drawn rather than bare.
           grep -rlq -- '--hanzo-ui-styles' out/_next/static/css \
             || { echo "::error::@hanzo/ui/styles.css is not in the export"; exit 1; }
+          # The e2e suite's host page is built only with TABS_E2E=1 and must
+          # never ship: a build that carries it is not the product.
+          [ ! -e out/e2e ] || { echo "::error::out/e2e is in the export: the e2e host page must never ship"; exit 1; }
 
       - name: Publish to the Sites plane
         uses: hanzoai/ci/.github/actions/site@v1

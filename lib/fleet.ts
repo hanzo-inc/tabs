@@ -33,13 +33,28 @@ import {
   pause,
   sandboxes,
   sessions,
+  subject,
 } from './api';
 import { type Binding, type TerminalHost, shellUrl } from './panes';
 import { streams as readStreams } from './plan';
+import { WAITING_EVENT } from './comeup';
 
 /** Machines heartbeat every 30s and the plane calls one stale after 90s, so
  *  polling faster than the fact changes would only cost requests. */
-const BEAT = 30_000;
+export const BEAT = 30_000;
+
+/** How often to read the list while a pane waits for its machine. The pane
+ *  waits for the list to say it runs (lib/comeup), so a 30-second read would
+ *  spend a third of its 90-second allowance just not looking. It is a list
+ *  read only: nothing is minted for a pending machine. */
+export const QUICK = 5_000;
+
+/** How long until the next read of the list: quick only while a pane on
+ *  screen is waiting for its machine and the page can be seen. A pending
+ *  machine nobody is looking at, or a tab in the background, is read on the
+ *  beat, so a machine stuck pending is not polled at speed for ever. */
+export const every = (paneWaiting: boolean, visible: boolean): number =>
+  paneWaiting && visible ? QUICK : BEAT;
 
 export interface Fleet {
   /** The machines, folded. Empty until the first read lands. */
@@ -54,8 +69,9 @@ export interface Fleet {
   error: string | null;
   /** A fresh url for a pane. The workspace holds no token, so this does. */
   mint: (host: TerminalHost, what: Binding) => Promise<string>;
-  /** Start a cloud box of one class and answer the name it goes by here. */
-  launch: (kind: Class) => Promise<string>;
+  /** Start a cloud box of one class and answer the name it goes by here.
+   *  `temporary` keeps no files; only a person's explicit choice asks for it. */
+  launch: (kind: Class, opts?: { temporary?: boolean }) => Promise<string>;
   /** Stop a cloud box that is running and re-read, so it leaves the workspace. */
   stop: (host: TerminalHost) => Promise<void>;
   /** Have the AI work a cloud box, a step at a time (cloud's sandbox agent). */
@@ -67,6 +83,9 @@ export interface Fleet {
   ) => Promise<void>;
   /** Read the registry again now. */
   refresh: () => void;
+  /** Whose machines these are (the token's subject), for what the workspace
+   *  remembers per person. */
+  account: string | null;
 }
 
 export function useFleet(token: string | null, origin: string = API): Fleet {
@@ -113,9 +132,28 @@ export function useFleet(token: string | null, origin: string = API): Fleet {
   useEffect(() => {
     if (!token) return;
     void read(token);
-    const beat = setInterval(() => void read(token), BEAT);
-    return () => clearInterval(beat);
   }, [token, read]);
+
+  // Quicker while a pane waits for its machine and the page is seen.
+  const [paneWaiting, setPaneWaiting] = useState(false);
+  const [visible, setVisible] = useState(true);
+  useEffect(() => {
+    const onWaiting = (e: Event) => setPaneWaiting(!!(e as CustomEvent<{ waiting?: boolean }>).detail?.waiting);
+    const onVisible = () => setVisible(document.visibilityState !== 'hidden');
+    onVisible();
+    window.addEventListener(WAITING_EVENT, onWaiting);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener(WAITING_EVENT, onWaiting);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, []);
+  const wait = every(paneWaiting, visible);
+  useEffect(() => {
+    if (!token) return;
+    const beat = setInterval(() => void read(token), wait);
+    return () => clearInterval(beat);
+  }, [token, read, wait]);
 
   /**
    * Machines that can serve shells, and the tunnel each one's terminals live on.
@@ -153,7 +191,9 @@ export function useFleet(token: string | null, origin: string = API): Fleet {
           machine: key,
           sandbox: s.id,
           screen: s.class === 'desktop' || s.class === 'browser',
-          status: 'online',
+          status: s.status === 'pending' ? 'pending' : 'online',
+          // No project, no disk that outlives it.
+          temporary: !s.project,
         });
       }
     }
@@ -193,9 +233,9 @@ export function useFleet(token: string | null, origin: string = API): Fleet {
   );
 
   const launch = useCallback(
-    async (kind: Class) => {
+    async (kind: Class, opts?: { temporary?: boolean }) => {
       if (!token) throw new Error('signed out');
-      const box = await createSandbox(token, kind, origin);
+      const box = await createSandbox(token, kind, origin, opts?.temporary);
       await read(token);
       return machineName(box);
     },
@@ -205,7 +245,7 @@ export function useFleet(token: string | null, origin: string = API): Fleet {
   const stop = useCallback(
     async (host: TerminalHost) => {
       if (!token) throw new Error('signed out');
-      if (!host.sandbox) throw new Error('only a cloud machine can be stopped here');
+      if (!host.sandbox) throw new Error('only a cloud computer can be stopped here');
       await pause(token, host.sandbox, origin);
       await read(token);
     },
@@ -220,11 +260,13 @@ export function useFleet(token: string | null, origin: string = API): Fleet {
       signal: AbortSignal,
     ) => {
       if (!token) throw new Error('signed out');
-      if (!host.sandbox) throw new Error('the AI works cloud machines; this one is linked');
+      if (!host.sandbox) throw new Error('the AI works cloud computers; this one is linked');
       return agentTurn(token, host.sandbox, body, onFrame, signal, origin);
     },
     [token, origin],
   );
 
-  return { hosts, streams: data?.n ?? null, read: data !== null, error, mint, launch, stop, agent, refresh };
+  const account = useMemo(() => subject(token), [token]);
+
+  return { hosts, streams: data?.n ?? null, read: data !== null, error, mint, launch, stop, agent, refresh, account };
 }

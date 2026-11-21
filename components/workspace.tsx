@@ -45,7 +45,6 @@
 import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
-  type SyntheticEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -68,7 +67,24 @@ import {
   SquareTerminal,
   X,
 } from 'lucide-react';
-import { Button, Input, Paragraph, SizableText, XStack, YStack } from '@hanzo/ui';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  Button,
+  Checkbox,
+  Input,
+  Label,
+  Paragraph,
+  SizableText,
+  XStack,
+  YStack,
+} from '@hanzo/ui';
 
 import { AgentPanel } from './agent';
 import { FRAME, frameFilter, useScheme } from '../lib/scheme';
@@ -98,21 +114,54 @@ import {
 // request. The workspace still holds no credential; what it gains is the
 // platform's own word for "no money", which is the one failure whose remedy
 // differs from every other.
-import { unfunded } from '../lib/api';
+import { signIn, unfunded } from '../lib/api';
 import {
-  DEADLINE,
   DOT,
   type Binding,
   isReady,
-  proves,
   label,
   machineOf,
   mintName,
-  rescued,
+  orphaned,
   web,
-  restore,
+  revive,
+  within,
 } from '../lib/panes';
-import { UPGRADE, over } from '../lib/plan';
+import { UPGRADE, full, over } from '../lib/plan';
+import {
+  type Come,
+  type ComeEvent,
+  type Listed,
+  WAITING_EVENT,
+  address,
+  begin,
+  due,
+  step as advance,
+  view,
+  waiting,
+} from '../lib/comeup';
+import {
+  type Kind,
+  type StartAsk,
+  HOST_PATIENCE,
+  answerBy,
+  decide,
+  forget,
+  quietKinds,
+  remember,
+  silent,
+  startQuestion,
+  stopQuestion,
+} from '../lib/start';
+
+/** This browser's storage, or none where it cannot be reached. */
+const store = () => {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+};
 
 /** The stack's own props, taken from the stack. @hanzo/ui is the one import
  *  source, so a local alias beats reaching past it to @hanzo/gui for a type. */
@@ -166,8 +215,17 @@ const STATE_EVENT = 'hanzo:tabs-state';
 /** One thing the host's menu asks for. */
 type Action = { kind: 'shell' | 'desktop' | 'page' | 'cloud' | 'focus'; machine?: string; id?: string };
 
-/** The class of cloud machine a launcher starts. */
-type Kind = 'dev' | 'desktop' | 'browser';
+/** One question the workspace puts to the person. */
+type Ask = {
+  title: string;
+  say: string;
+  yes: string;
+  /** The safe answer, focused first. Absent, the question is a notice whose
+   *  one button is `yes`. */
+  no?: string;
+  /** Offer "Don't ask again", in these words: what it would cover. */
+  remember?: string;
+};
 
 /** Where a new pane goes: splitting `target` in `dir`, or — null — a new column
  *  at the top level, the level evened to make room (`append`). */
@@ -334,6 +392,8 @@ export function Workspace({
   mint,
   onLaunch,
   onStop,
+  confirmLease,
+  account,
   agent,
   streams = null,
   start,
@@ -351,11 +411,22 @@ export function Workspace({
    *  serves the page and what credential opens it, and in nothing a layout cares
    *  about. The caller owns the token; the workspace only ever holds the URL. */
   mint?: (host: TerminalHost, what: Binding) => Promise<string>;
-  /** Start a cloud machine of one class, and answer the name it goes by here. */
-  onLaunch?: (kind: 'dev' | 'desktop' | 'browser') => Promise<string>;
+  /** Start a cloud machine of one class, and answer the name it goes by here.
+   *  `temporary` asks for one that keeps no files, and is only ever sent after
+   *  the person chose that in those words (out of credit, see the failed pane). */
+  onLaunch?: (kind: Kind, opts: { temporary: boolean }) => Promise<string>;
   /** Stop a cloud machine. Absent, a pane that could not connect to one cannot
    *  offer to stop it. */
   onStop?: (host: TerminalHost) => Promise<void>;
+  /** Asked before the workspace starts a NEW cloud computer — never for another
+   *  pane on one already running. Answer true to start it. Absent, the
+   *  workspace asks itself ("This starts another cloud computer on your
+   *  plan"). A host with its own confirm on its menu answers true for
+   *  `from: 'menu'`, so one action is never asked twice. */
+  confirmLease?: (ask: StartAsk) => boolean | Promise<boolean>;
+  /** Who is signed in (`useFleet().account`). "Don't ask again" is kept per
+   *  account and per class of machine; absent, it is not offered. */
+  account?: string | null;
   /** Have the AI work a cloud machine (cloud's sandbox agent). Absent, no pane offers it. */
   agent?: (
     host: TerminalHost,
@@ -364,7 +435,8 @@ export function Workspace({
     signal: AbortSignal,
   ) => Promise<void>;
   /** How many tabs the plan lets stream at once (`lib/plan.ts`): 0 none, N a cap,
-   *  -1 no cap, null not told — which enforces nothing. */
+   *  -1 no cap, null not told — which caps no stream, and makes every start of
+   *  a cloud computer ask first ("Don't ask again" needs a plan to lean on). */
   streams?: number | null;
 }) {
   // A machine with no `base` serves no terminal, and there is nothing to open on
@@ -387,10 +459,9 @@ export function Workspace({
   const initialSaved = useRef<Saved | null | undefined>(undefined);
   const [ready, setReady] = useState(false);
 
-  // Restore panes whose machines are actually live (or open pages), pruning
-  // stale/expired sandbox panes and aborted empty splits so a reload never dumps
-  // dead columns across the workspace. If no saved pane survives, open the first
-  // live machine's default shell.
+  // Bring the saved layout back through `revive`, which keeps only the panes
+  // that can show something now, so a reload never lays out dead columns. If no
+  // saved pane survives, open the first live machine's default shell.
   useEffect(() => {
     if (initialSaved.current === undefined) {
       initialSaved.current = load();
@@ -401,20 +472,7 @@ export function Workspace({
     if (!ready) {
       if (saved?.tree) {
         seq.current = saved.seq ?? 0;
-        let nextTree: Tile | null = saved.tree;
-        const nextBind: Record<string, Binding> = {};
-        for (const [id, raw] of Object.entries(saved.bind)) {
-          const b = restore(raw);
-          if ((b.kind === 'shell' || b.kind === 'gone') && known.has(b.shell.machine)) {
-            nextBind[id] = { kind: 'shell', shell: b.shell };
-          } else if (b.kind === 'screen' && known.has(b.machine)) {
-            nextBind[id] = b;
-          } else if (b.kind === 'page' && b.url) {
-            nextBind[id] = b;
-          } else if (nextTree) {
-            nextTree = closePane(nextTree, id);
-          }
-        }
+        const { tree: nextTree, bind: nextBind } = revive(saved.tree, saved.bind, known);
         if (nextTree) {
           setBind(nextBind);
           setTile(nextTree);
@@ -439,20 +497,7 @@ export function Workspace({
     // restore any matching panes from initialSaved or open the first live machine.
     if (!tile && live.length > 0 && initialSaved.current !== undefined) {
       if (saved?.tree) {
-        let nextTree: Tile | null = saved.tree;
-        const nextBind: Record<string, Binding> = {};
-        for (const [id, raw] of Object.entries(saved.bind)) {
-          const b = restore(raw);
-          if ((b.kind === 'shell' || b.kind === 'gone') && known.has(b.shell.machine)) {
-            nextBind[id] = { kind: 'shell', shell: b.shell };
-          } else if (b.kind === 'screen' && known.has(b.machine)) {
-            nextBind[id] = b;
-          } else if (b.kind === 'page' && b.url) {
-            nextBind[id] = b;
-          } else if (nextTree) {
-            nextTree = closePane(nextTree, id);
-          }
-        }
+        const { tree: nextTree, bind: nextBind } = revive(saved.tree, saved.bind, known);
         initialSaved.current = null;
         if (nextTree) {
           setBind(nextBind);
@@ -554,39 +599,207 @@ export function Workspace({
     setBind((b) => (b[id] ? { ...b, [id]: what } : b));
   }, []);
 
+  /** The machines this workspace started. A pane on one is starting even
+   *  before the list has it (lib/comeup `begin`). */
+  const startedHere = useRef(new Set<string>());
+
+  // ---- questions: one at a time, over the panes ----------------------------
+  const [asks, setAsks] = useState<
+    (Ask & { n: number; answer: (yes: boolean, remember: boolean) => void })[]
+  >([]);
+  const asked = useRef(0);
+  // Focus goes back once, when the LAST queued question is answered: handing
+  // it back between two would pull it behind the second dialog. It goes to
+  // the control that opened the first one, or — when that is gone, as a
+  // closed pane's Close button is — to the focused pane, else the workspace's
+  // first control, never to the page's body.
+  const queued = useRef(0);
+  const opener = useRef<Element | null>(null);
+  const rootRef = useRef<HTMLElement | null>(null);
+  const focusNow = useRef<string | null>(null);
+  focusNow.current = focus;
+  const handBack = () => {
+    // A question asked while this waited (a stop that failed at once) owns
+    // focus now; it is handed back when that one is answered.
+    if (queued.current > 0) return;
+    const was = opener.current;
+    opener.current = null;
+    // The opener may be the host's own menu, outside the workspace: any control
+    // still on the page gets focus back. The page's body is no control — it is
+    // what is focused when nobody pressed anything, or when a click does not
+    // focus a button (Safari) — so it falls back like a closed pane's button.
+    const to =
+      was instanceof HTMLElement && was.isConnected && was !== document.body
+        ? was
+        : (frames.current[focusNow.current ?? ''] ??
+          rootRef.current?.querySelector<HTMLElement>('button:not([aria-disabled="true"])'));
+    to?.focus();
+  };
+  const ask = useCallback(
+    (q: Ask) =>
+      new Promise<{ yes: boolean; remember: boolean }>((done) => {
+        const n = asked.current++;
+        if (queued.current++ === 0) opener.current = document.activeElement;
+        let settled = false;
+        setAsks((a) => [
+          ...a,
+          {
+            ...q,
+            n,
+            answer: (yes, remember) => {
+              if (settled) return;
+              settled = true;
+              setAsks((x) => x.filter((y) => y.n !== n));
+              if (--queued.current === 0) setTimeout(handBack, 0);
+              done({ yes, remember });
+            },
+          },
+        ]);
+      }),
+    // handBack reads refs only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  // The machines as they are NOW, for an answer given renders after the ask.
+  const hostsNow = useRef(hosts);
+  hostsNow.current = hosts;
+  /** Panes closed while their machine was still starting. */
+  const abandoned = useRef(new Set<string>());
+  /** Temporary machines this workspace started, known before the list has them. */
+  const keepsNothing = useRef(new Set<string>());
+
+  /** A cloud computer no pane shows any more is still running on the plan, so
+   *  the person is asked whether to keep it, never left to find it later. */
+  const offerStop = useCallback(
+    (machine: string) => {
+      const temporary = !!hostsNow.current.find((x) => x.machine === machine)?.temporary || keepsNothing.current.has(machine);
+      void ask(stopQuestion(machine, { temporary, canStop: !!onStop })).then(async (a) => {
+        if (!a.yes || !onStop) return;
+        try {
+          const h = hostsNow.current.find((x) => x.machine === machine);
+          if (!h) throw new Error('it is not in the list of machines yet');
+          await onStop(h);
+        } catch (e) {
+          void ask({
+            title: `Could not stop ${machine}`,
+            say: `Could not stop ${machine} (${e instanceof Error ? e.message : 'no answer'}). It is still running.`,
+            yes: 'OK',
+          });
+        }
+      });
+    },
+    [ask, onStop],
+  );
+
   /** Start a machine for pane `id` and open it there. The point of the button
    *  is what you get to look at: a machine that arrives with nothing framed on
    *  it is a row in a list, and you would have to go and ask for the thing you
    *  already asked for. */
   const boot = useCallback(
-    (id: string, kind: Kind) => {
-      if (!onLaunch) return;
+    (id: string, kind: Kind, temporary = false): Promise<unknown> => {
+      if (!onLaunch) return Promise.resolve();
       const want = kind === 'dev' ? 'shell' : 'screen';
       settle(id, { kind: 'starting', want });
-      onLaunch(kind)
-        .then((machine) => settle(id, want === 'screen' ? screenOn(machine) : shellOn(machine)))
+      return onLaunch(kind, { temporary })
+        .then((machine) => {
+          startedHere.current.add(machine);
+          if (temporary) keepsNothing.current.add(machine);
+          // Its pane was closed while it started: it is running, on the plan,
+          // in no pane at all — which is exactly when the person must be told.
+          if (abandoned.current.delete(id)) offerStop(machine);
+          else settle(id, want === 'screen' ? screenOn(machine) : shellOn(machine));
+        })
         .catch((e) =>
+          !abandoned.current.delete(id) &&
           settle(id, {
             kind: 'failed',
             why: e instanceof Error ? e.message : 'could not start a machine',
             unfunded: unfunded(e),
+            start: kind,
           }),
         );
     },
-    [onLaunch, settle, shellOn, screenOn],
+    [onLaunch, settle, shellOn, screenOn, offerStop],
   );
 
-  /** A new pane, with a machine starting in it. The pane opens on the CLICK,
-   *  not on the answer: provisioning is the long part, so waiting for it before
-   *  drawing anything is a workspace that sits unchanged for the whole minute
-   *  you are waiting. */
-  const launch = useCallback(
-    (kind: Kind, at: At) => {
-      if (!onLaunch) return;
-      boot(open({ kind: 'starting', want: kind === 'dev' ? 'shell' : 'screen' }, at), kind);
-    },
-    [onLaunch, open, boot],
-  );
+  // The layout as it is NOW, for a start answered after its question was open:
+  // the pane it was asked from may have closed meanwhile.
+  const tileNow = useRef(tile);
+  tileNow.current = tile;
+  const bindNow = useRef(bind);
+  bindNow.current = bind;
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  /** The classes this account said not to be asked about, as shown in the
+   *  toolbar's way to undo it. Re-read when the account changes. */
+  const [quiet, setQuiet] = useState<Kind[]>([]);
+  useEffect(() => setQuiet(quietKinds(store(), account)), [account]);
+
+  /** The workspace's own question before a start. */
+  const askToStart = async (a: StartAsk) => {
+    const said = await ask(startQuestion(a, account));
+    if (said.yes && said.remember) {
+      remember(store(), account, a.kind);
+      setQuiet(quietKinds(store(), account));
+    }
+    return said.yes;
+  };
+
+  /**
+   * THE start path: every new cloud computer, whatever asked for it, comes
+   * through here, and here alone calls `boot`. One start is in flight at a time,
+   * from the press until the machine answers; the controls that start one are
+   * disabled meanwhile, and a press that arrives anyway is ignored.
+   *
+   * The pane opens once the start is agreed, in `at` (or in the open pane
+   * `into`, which the start fills), and the machine starts in it.
+   */
+  const starting = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const startMachine = async (req: { kind: Kind; from: StartAsk['from']; at?: At; into?: string; temporary?: boolean }) => {
+    if (!onLaunch) return;
+    const a: StartAsk = {
+      kind: req.kind,
+      from: req.from,
+      temporary: !!req.temporary,
+      // From what streams now: a pane started into is a failed one, streaming nothing.
+      beyond: full(rendered, bind, streams),
+      limit: streams,
+      expires: Date.now() + HOST_PATIENCE,
+    };
+    const plan = decide({
+      busy: starting.current,
+      host: !!confirmLease,
+      quiet: silent(quietKinds(store(), account).includes(a.kind), a, account),
+    });
+    if (plan === 'ignore') return;
+    starting.current = true;
+    setBusy(true);
+    try {
+      const yes =
+        plan === 'go' ||
+        (plan === 'host' ? await answerBy(() => confirmLease!(a), a.expires) : await askToStart(a));
+      if (!yes || !mounted.current) return;
+      let id = req.into;
+      if (id) {
+        if (!bindNow.current[id]) return; // the pane it was for has closed
+      } else {
+        const at = req.at && tileNow.current && paneIds(tileNow.current).includes(req.at.target) ? req.at : null;
+        id = open({ kind: 'starting', want: req.kind === 'dev' ? 'shell' : 'screen' }, at);
+      }
+      await boot(id, req.kind, a.temporary);
+    } finally {
+      starting.current = false;
+      if (mounted.current) setBusy(false);
+    }
+  };
 
   /** What the host's menu asked for, answered by this render's buttons. A ref,
    *  so the window listener is added once and still acts on current state. */
@@ -699,9 +912,19 @@ export function Workspace({
   // cause — gate, CSP, dead tunnel, offline machine. One signal, one meaning, and
   // no case analysis to get wrong the next time a browser invents a fourth way to
   // fail.
-  const [alive, setAlive] = useState<Record<string, boolean>>({});
-  const [waited, setWaited] = useState<Record<string, boolean>>({});
   const frames = useRef<Record<string, HTMLIFrameElement | null>>({});
+
+  // ---- how each pane comes up: ONE machine (lib/comeup), ONE runner -------
+  // The machine decides; this runs what it asks for (an address, a wake-up)
+  // and feeds it what happens (the list, the mint's answer, the frame's load
+  // and ready). A pane that closes, is capped, or loses its machine loses its
+  // state and its timer with it.
+  const [come, setCome] = useState<Record<string, Come>>({});
+  const epochs = useRef(0);
+  const send = useCallback(
+    (id: string, e: ComeEvent) => setCome((c) => (c[id] ? { ...c, [id]: advance(c[id]!, e) } : c)),
+    [],
+  );
 
   const [size, setSize] = useState(loadSize);
   const scheme = useScheme();
@@ -710,11 +933,12 @@ export function Workspace({
     const onMessage = (e: MessageEvent) => {
       if (!isReady(e.data)) return;
       // The sender identifies the pane: a message is trusted only when it comes
-      // from the window of a frame this workspace actually rendered. The origin
-      // is not pinned because every machine publishes on its own tunnel host.
+      // from inside a frame this workspace actually rendered — its window or
+      // one nested in it, since a page may wrap its terminal in a frame. The
+      // origin is not pinned because every machine publishes on its own host.
       for (const [id, el] of Object.entries(frames.current)) {
-        if (el && e.source === el.contentWindow) {
-          setAlive((a) => (a[id] ? a : { ...a, [id]: true }));
+        if (el && within(e.source, el.contentWindow, window)) {
+          send(id, { type: 'ready' });
           el.contentWindow?.postMessage({
             source: 'hanzo-term',
             fontSize: size,
@@ -726,11 +950,11 @@ export function Workspace({
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [size]);
+  }, [size, send]);
 
   // The reader's type size, told to every terminal that is up.
   //
-  // It runs on `alive` as well as on the size itself, so a pane that boots after
+  // It runs on the come-up as well as on the size itself, so a pane that boots after
   // the setting was chosen is told as soon as it says it is ready — the same
   // signal, used for the same reason, rather than a second notion of when a
   // frame can be spoken to. A pane that never answers is never sent to, which is
@@ -738,7 +962,7 @@ export function Workspace({
   useEffect(() => {
     window.localStorage.setItem(SIZE_KEY, String(size));
     for (const [id, el] of Object.entries(frames.current)) {
-      if (alive[id]) {
+      if (come[id]?.at === 'ready') {
         el?.contentWindow?.postMessage({
           source: 'hanzo-term',
           fontSize: size,
@@ -746,16 +970,7 @@ export function Workspace({
         }, '*');
       }
     }
-  }, [size, alive]);
-
-  const probe = useCallback((id: string, el: HTMLIFrameElement | null) => {
-    frames.current[id] = el;
-    if (!el) return;
-    // Give the terminal a moment to boot before calling it absent — a rescue that
-    // flashes over every pane on every load is its own defect.
-    const t = setTimeout(() => setWaited((w) => (w[id] ? w : { ...w, [id]: true })), DEADLINE);
-    return () => clearTimeout(t);
-  }, []);
+  }, [size, come]);
 
   /**
    * Where a browser pane has been, and where in that it is.
@@ -809,34 +1024,6 @@ export function Workspace({
     if (el) el.src = el.src;
   }, []);
 
-  // Which panes owe us a word that they came up. A page on the open web owes
-  // none, so its silence is not a failure to report.
-  const proving = useMemo(
-    () => Object.fromEntries(Object.entries(bind).map(([id, b]) => [id, proves(b)])),
-    [bind],
-  );
-  const refused = useMemo(() => rescued(waited, alive, proving), [waited, alive, proving]);
-
-  // A cloud machine keeps running (and counting against the lease) when its pane
-  // fails to connect, so the failed pane says so and offers to stop it. Per
-  // machine, not per pane: two panes on one box share the answer.
-  const [stopping, setStopping] = useState<Record<string, true | string>>({});
-  const stop = useCallback(
-    (h: TerminalHost) => {
-      if (!onStop) return;
-      setStopping((s) => ({ ...s, [h.machine]: true }));
-      onStop(h)
-        .then(() => setStopping(({ [h.machine]: _done, ...rest }) => rest))
-        .catch((e) =>
-          setStopping((s) => ({
-            ...s,
-            [h.machine]: e instanceof Error ? e.message : 'could not stop the machine',
-          })),
-        );
-    },
-    [onStop],
-  );
-
   // A pick is "which machine", and what to MAKE of the one picked comes with
   // the question — so the same picker asks for a shell's machine and a
   // screen's, and neither knows about the other.
@@ -851,63 +1038,141 @@ export function Workspace({
   /** The panes past what the plan streams. They are kept and shown, never minted. */
   const capped = useMemo(() => over(rendered, bind, streams), [rendered, bind, streams]);
 
-  // A PANE'S URL IS MINTED, NEVER DERIVED — for every machine, not only the
-  // ones we start. Minted per PANE and kept until that pane reconnects, because
-  // what the mint returns is spent: a sandbox's ticket by the frame's first
-  // load, a tunnel's session by nothing, but both are asked for with a
-  // credential this component deliberately does not hold. Re-deriving on render
-  // would hand the iframe a dead one.
-  //
-  // In-flight ids are tracked outside state so a re-render mid-mint cannot start
-  // a second mint for the same pane.
-  const [minted, setMinted] = useState<Record<string, string>>({});
-  const minting = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    if (!mint) return;
-    for (const id of rendered) {
-      const b = bind[id];
-      const m = b && (b.kind === 'shell' || b.kind === 'screen') ? machineOf(b) : null;
-      if (!b || !m) continue;
-      const h = hostOf(m);
-      if (!h || minted[id] || minting.current.has(id) || capped.has(id)) continue;
-      minting.current.add(id);
-      mint(h, b)
-        .then((src) => setMinted((m) => ({ ...m, [id]: src })))
-        // A pane whose URL never arrived is offered the way out immediately,
-        // rather than waiting out a deadline for a frame that was never made.
-        .catch(() => setWaited((w) => ({ ...w, [id]: true })))
-        .finally(() => minting.current.delete(id));
-    }
-  }, [rendered, bind, hostOf, mint, minted, capped]);
+  /** What the list says about a machine, as the come-up machine reads it. */
+  const listedOf = useCallback(
+    (m: string): Listed => {
+      const h = live.find((x) => x.machine === m);
+      return !h ? 'gone' : h.status === 'pending' ? 'pending' : 'running';
+    },
+    [live],
+  );
 
-  /** Reconnect a pane: forget the spent URL and the frame's history so the mint
-   *  effect runs again with a fresh credential and the deadline re-arms. */
-  const reconnect = useCallback((id: string) => {
-    const drop = <T,>(o: Record<string, T>): Record<string, T> => {
-      const { [id]: _gone, ...rest } = o;
-      return rest;
-    };
-    setMinted(drop);
-    setAlive(drop);
-    setWaited(drop);
-  }, []);
+  // Which panes come up, and what the list says to each. A pane begins when it
+  // shows a machine and is not capped; it is dropped when it closes, is capped
+  // or stops showing one. Everything starts over when the account changes.
+  const forAccount = useRef(account);
+  useEffect(() => {
+    const fresh = forAccount.current !== account;
+    forAccount.current = account;
+    setCome((c) => {
+      const was = fresh ? {} : c;
+      const next: Record<string, Come> = {};
+      for (const id of rendered) {
+        const b = bind[id];
+        const m = b && (b.kind === 'shell' || b.kind === 'screen') ? machineOf(b) : null;
+        if (!m || capped.has(id)) continue;
+        const now = Date.now();
+        next[id] = was[id]
+          ? advance(was[id]!, { type: 'list', listed: listedOf(m), now, epoch: ++epochs.current })
+          : begin(now, listedOf(m), startedHere.current.has(m), ++epochs.current);
+      }
+      const same = Object.keys(next).length === Object.keys(c).length && Object.keys(next).every((id) => next[id] === c[id]);
+      return same ? c : next;
+    });
+  }, [rendered, bind, capped, listedOf, account]);
+
+  // What the machine asks for: an address, once per attempt. With no `mint`
+  // from the host, or no machine to mint on, the ask fails at once and the
+  // machine decides what that means, as it does for any other failure.
+  const askedFor = useRef(new Set<string>());
+  useEffect(() => {
+    // Forget asks for panes that closed and attempts that moved on.
+    for (const k of askedFor.current) {
+      const [id, epoch] = k.split(':');
+      if (String(come[id!]?.epoch) !== epoch) askedFor.current.delete(k);
+    }
+    for (const [id, c] of Object.entries(come)) {
+      const key = due(c).mint;
+      if (!key || c.at !== 'minting' || askedFor.current.has(`${id}:${key}`)) continue;
+      askedFor.current.add(`${id}:${key}`);
+      const { epoch, tries } = c;
+      const failed = (e: unknown) =>
+        send(id, { type: 'mint-failed', signIn: signIn(e), epoch, tries, now: Date.now() });
+      const b = bindNow.current[id];
+      const m = b ? machineOf(b) : null;
+      const h = m ? hostOf(m) : undefined;
+      if (!mint || !b || !h) failed(null);
+      else mint(h, b).then((url) => send(id, { type: 'minted', url, epoch, tries }), failed);
+    }
+  }, [come, mint, hostOf, send]);
+
+  // Tell the fleet whether a pane waits on the list, so it reads it quickly
+  // only then (lib/fleet `every`).
+  const anyWaiting = waiting(come);
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent(WAITING_EVENT, { detail: { waiting: anyWaiting } }));
+  }, [anyWaiting]);
+  useEffect(
+    () => () => void window.dispatchEvent(new CustomEvent(WAITING_EVENT, { detail: { waiting: false } })),
+    [],
+  );
+
+  // And when to look again: one timer per pane, at the time the machine names,
+  // replaced when that changes and cleared when the pane's state goes.
+  const wakes = useRef<Record<string, { at: number; t: ReturnType<typeof setTimeout> }>>({});
+  useEffect(() => {
+    for (const [id, w] of Object.entries(wakes.current)) {
+      if (!come[id] || due(come[id]!).wake !== w.at) {
+        clearTimeout(w.t);
+        delete wakes.current[id];
+      }
+    }
+    for (const [id, c] of Object.entries(come)) {
+      const at = due(c).wake;
+      if (at === undefined || wakes.current[id]) continue;
+      const t = setTimeout(() => {
+        delete wakes.current[id];
+        // A timer may fire a moment before the time it was set for.
+        send(id, { type: 'tick', now: Math.max(Date.now(), at) });
+      }, Math.max(0, at - Date.now()));
+      wakes.current[id] = { at, t };
+    }
+  }, [come, send]);
+  useEffect(
+    () => () => {
+      for (const w of Object.values(wakes.current)) clearTimeout(w.t);
+    },
+    [],
+  );
+
+  /** Reconnect a pane: the come-up begins again, with a fresh address. */
+  const reconnect = (id: string) => {
+    const b = bindNow.current[id];
+    const m = b ? machineOf(b) : null;
+    if (m) send(id, { type: 'reconnect', listed: listedOf(m), now: Date.now(), epoch: ++epochs.current });
+  };
+
+  /** Close a pane. Closing the last pane on a cloud computer asks whether to
+   *  stop it, and closing one still starting asks when it arrives. */
+  const close = (id: string) => {
+    if (bind[id]?.kind === 'starting') abandoned.current.add(id);
+    const m = orphaned(id, bind, (x) => !!hostOf(x)?.sandbox || startedHere.current.has(x));
+    doClose(id);
+    if (m) offerStop(m);
+  };
 
   /** Never make someone choose from a set of one — and with no machine to
    *  pick, a new one is the set of one. */
-  const openHere = (make: (m: string) => Binding, from: TerminalHost[], at: At, kind: Kind) => {
+  const openHere = (
+    make: (m: string) => Binding,
+    from: TerminalHost[],
+    at: At,
+    kind: Kind,
+    via: StartAsk['from'] = 'button',
+  ) => {
     if (from.length === 1) open(make(from[0]!.machine), at);
-    else if (from.length === 0 && onLaunch) launch(kind, at);
+    else if (from.length === 0 && onLaunch) void startMachine({ kind, at, from: via });
     else setPicking({ make, from, at, kind });
   };
 
   /** A shell goes on any live machine. */
-  const openShell = (at: At) => openHere(shellOn, live, at, 'dev');
+  const openShell = (at: At, via: StartAsk['from'] = 'button') => openHere(shellOn, live, at, 'dev', via);
 
   /** A split divides the pane it was asked of, and with a launcher what goes in
    *  the new half is a NEW machine, unasked: a split is for another place to
    *  work, and asking where it should run made every split a question. */
   const split = (dir: Dir, target: string) =>
-    onLaunch ? launch('dev', { dir, target }) : openShell({ dir, target });
+    onLaunch ? void startMachine({ kind: 'dev', at: { dir, target }, from: 'split' }) : openShell({ dir, target });
 
   /** A page needs no machine, so it needs no picker and no mint — the pane
    *  opens empty and the address is the whole of what it wants. */
@@ -917,12 +1182,13 @@ export function Workspace({
    *  new desktop every press: one that reused the first live one made a second
    *  press look like nothing happened. Without one, the screens that exist are
    *  all there is. */
-  const openScreen = (at: At) =>
-    onLaunch ? launch('desktop', at) : openHere(screenOn, watchable, at, 'desktop');
+  const openScreen = (at: At, via: StartAsk['from'] = 'button') =>
+    onLaunch ? void startMachine({ kind: 'desktop', at, from: via }) : openHere(screenOn, watchable, at, 'desktop', via);
 
   /** A browser, the way its button makes one: a machine with a launcher, a
    *  framed page without. */
-  const openBrowser = (at: At) => (onLaunch ? launch('browser', at) : openPage(at));
+  const openBrowser = (at: At, via: StartAsk['from'] = 'button') =>
+    onLaunch ? void startMachine({ kind: 'browser', at, from: via }) : openPage(at);
 
   /** The host's menu (@hanzo/app Sidebar) draws beside the workspace and holds
    *  none of its state, so it asks by event: each kind is the button of the same
@@ -936,18 +1202,18 @@ export function Workspace({
       switch (a.kind) {
         case 'shell':
           if (on) open(shellOn(on.machine), null);
-          else if (live.length) openShell(null);
-          else if (onLaunch) launch('dev', null);
+          else if (live.length) openShell(null, 'menu');
+          else if (onLaunch) void startMachine({ kind: 'dev', from: 'menu' });
           return;
         case 'desktop':
           if (on?.screen) open(screenOn(on.machine), null);
-          else openScreen(null);
+          else openScreen(null, 'menu');
           return;
         case 'page':
-          openBrowser(null);
+          openBrowser(null, 'menu');
           return;
         case 'cloud':
-          if (onLaunch) launch('dev', null);
+          if (onLaunch) void startMachine({ kind: 'dev', from: 'menu' });
           return;
         case 'focus':
           if (a.id && bind[a.id]) setFocus(a.id);
@@ -956,9 +1222,35 @@ export function Workspace({
     };
   });
 
+  // The visible undo for "Don't ask again", beside the start buttons wherever
+  // they are: there while anything is remembered for this account, gone once
+  // it is undone.
+  const reset =
+    quiet.length > 0 && !confirmLease ? (
+      <Button
+        variant="ghost"
+        size="sm"
+        onPress={() => {
+          forget(store(), account);
+          setQuiet([]);
+        }}
+      >
+        <SizableText size="$1">Ask before starting again</SizableText>
+      </Button>
+    ) : null;
+
+  // The question being asked, over everything it is about.
+  const question = asks[0] ? (
+    <Question key={asks[0].n} q={asks[0]} onAnswer={asks[0].answer} />
+  ) : null;
+
   if (live.length === 0 && !tile) {
     return (
       <YStack
+        ref={(el) => {
+          rootRef.current = el instanceof HTMLElement ? el : null;
+        }}
+        position="relative"
         height="100%"
         width="100%"
         items="center"
@@ -981,21 +1273,32 @@ export function Workspace({
             at all is exactly who has nowhere else to get one. */}
         {onLaunch ? (
           <XStack items="center" gap="$1.5">
-            <Act run={() => launch('dev', null)} icon={<Cloud size={14} />} label="New cloud machine" />
-            <Act run={() => launch('desktop', null)} icon={<Monitor size={14} />} label="New desktop" />
-            <Act run={() => launch('browser', null)} icon={<Globe size={14} />} label="New browser" />
+            <Act disabled={busy} run={() => void startMachine({ kind: 'dev', from: 'button' })} icon={<Cloud size={14} />} label="New cloud computer" />
+            <Act disabled={busy} run={() => void startMachine({ kind: 'desktop', from: 'button' })} icon={<Monitor size={14} />} label="New desktop" />
+            <Act disabled={busy} run={() => void startMachine({ kind: 'browser', from: 'button' })} icon={<Globe size={14} />} label="New browser" />
           </XStack>
         ) : null}
+        {reset}
+        {question}
       </YStack>
     );
   }
 
   return (
-    <YStack height="100%" width="100%" gap="$2.5" p="$3">
+    <YStack
+      ref={(el) => {
+        rootRef.current = el instanceof HTMLElement ? el : null;
+      }}
+      height="100%"
+      width="100%"
+      gap="$2.5"
+      p="$3"
+    >
       {/* One row. Actions, not a status report. */}
       <XStack shrink={0} items="center" gap="$2">
         {start}
         <Act
+          disabled={busy}
           run={() => openShell(null)}
           icon={<SquareTerminal size={14} />}
           label="New shell"
@@ -1005,7 +1308,8 @@ export function Workspace({
             way to look at it. */}
         {watchable.length || onLaunch ? (
           <Act
-            run={() => openScreen(null)}
+            disabled={busy}
+          run={() => openScreen(null)}
             icon={<Monitor size={14} />}
             label={onLaunch ? 'New desktop' : 'Desktop'}
           />
@@ -1020,18 +1324,21 @@ export function Workspace({
         {/* With a launcher, a browser is a machine: Chromium on a screen you watch and
             an agent can drive. A framed page is what a host with none can offer. */}
         <Act
+          disabled={busy}
           run={() => openBrowser(null)}
           icon={<Globe size={14} />}
           label={onLaunch ? 'New browser' : 'Browse'}
         />
         {onLaunch ? (
           <Act
-            run={() => launch('dev', null)}
+            disabled={busy}
+            run={() => void startMachine({ kind: 'dev', from: 'button' })}
             icon={<Cloud size={14} />}
-            label="New cloud machine"
+            label="New cloud computer"
           />
         ) : null}
         <XStack ml="auto" shrink={0} items="center" gap="$1.5">
+          {reset}
           {/* Type size. Two buttons and the number they move — a stepper IS the
               setting, so there is no panel to open and nothing to find. It reads
               its own state, which a slider or a menu would each need a second
@@ -1080,8 +1387,9 @@ export function Workspace({
             variant="outline"
             size="sm"
             onPress={() => focus && split('row', focus)}
-            disabled={!focus}
+            disabled={!focus || busy}
             title="Split right"
+            aria-label="Split right"
           >
             <Columns2 size={14} />
             {paging ? null : <SizableText size="$1">Right</SizableText>}
@@ -1090,8 +1398,9 @@ export function Workspace({
             variant="outline"
             size="sm"
             onPress={() => focus && split('col', focus)}
-            disabled={!focus}
+            disabled={!focus || busy}
             title="Split down"
+            aria-label="Split down"
           >
             <Rows2 size={14} />
             {paging ? null : <SizableText size="$1">Down</SizableText>}
@@ -1177,7 +1486,43 @@ export function Workspace({
             // screen and never gets one.
             // A page's url IS its binding — there is no credential to mint and
             // nothing spent by framing it. Everything else waits for the mint.
-            const url = capped.has(id) ? null : b.kind === 'page' ? b.url : (minted[id] ?? null);
+            const url = capped.has(id) ? null : b.kind === 'page' ? b.url : address(come[id]);
+            // The one way out for a pane whose terminal did not come up — a
+            // frame that never said ready, or an address that never arrived.
+            // A frame that never said ready is a credential that no longer
+            // opens anything — a spent ticket, an aged session — and the URL
+            // cannot be reopened, only asked for again. NEVER a sign-in here:
+            // the mint IS the sign-in, and sending someone to a second one is
+            // what this stopped doing.
+            const rescue = () => (
+              <Cover gap="$3" bg={FRAME[scheme].ground}>
+                <Note>
+                  {b.kind === 'screen' ? 'The desktop' : 'The terminal'} did not come up.
+                  Reconnect asks for a fresh link to it and tries again.
+                </Note>
+                <Button variant="outline" minH={44} onPress={() => reconnect(id)}>
+                  Reconnect
+                </Button>
+                {host?.sandbox && onStop ? (
+                  <>
+                    <Note>
+                      {host.machine} is still running and counts against your plan until it
+                      is stopped.
+                    </Note>
+                    {/* The one way to stop: the same question as closing,
+                        which warns when the machine keeps no files. */}
+                    <Button variant="outline" minH={44} onPress={() => offerStop(host.machine)}>
+                      Stop machine
+                    </Button>
+                  </>
+                ) : null}
+              </Cover>
+            );
+            // How a pane on a machine reads, from its come-up (lib/comeup `view`).
+            const seen = come[id] ? view(come[id]!, b.kind === 'screen' ? 'screen' : 'shell') : null;
+            // A pane on a machine has a come-up from its first effect on; for the
+            // one render before that there is nothing to say yet.
+            const f = seen?.face ?? 'quiet';
             // Every rect is page-relative; the track is `pages * 100%` wide, so a
             // page occupies `100/pages` of it.
             const left = paging ? r.left / pages : r.left;
@@ -1255,10 +1600,10 @@ export function Workspace({
                   ) : null}
                   {paging ? null : (
                     <XStack ml="auto" items="center" gap="$1">
-                      <Chip run={() => split('row', id)} title="Split right">
+                      <Chip run={() => split('row', id)} title="Split right" disabled={busy}>
                         <Columns2 size={14} />
                       </Chip>
-                      <Chip run={() => split('col', id)} title="Split down">
+                      <Chip run={() => split('col', id)} title="Split down" disabled={busy}>
                         <Rows2 size={14} />
                       </Chip>
                     </XStack>
@@ -1268,7 +1613,7 @@ export function Workspace({
                       pitch overlap and the LAST wins — close was stealing taps
                       from split. */}
                   <Chip
-                    run={() => doClose(id)}
+                    run={() => close(id)}
                     title="Close pane"
                     ml={paging ? 'auto' : 0}
                   >
@@ -1280,6 +1625,9 @@ export function Workspace({
                 <YStack position="relative" flex={1} minH={0} bg={FRAME[scheme].ground}>
                   {url ? (
                     <iframe
+                      // One frame per address, so a fresh ticket is a fresh
+                      // frame and `spend` sees every load of an address.
+                      key={url}
                       data-pane={id}
                       src={url}
                       title={title}
@@ -1287,10 +1635,10 @@ export function Workspace({
                       // the frame ITS OWN origin — which ttyd needs for its socket
                       // — never ours. What is withheld is top-navigation and popups.
                       sandbox="allow-scripts allow-same-origin allow-forms"
-                      ref={(el) => probe(id, el)}
-                      onLoad={(e: SyntheticEvent<HTMLIFrameElement>) =>
-                        probe(id, e.currentTarget)
-                      }
+                      ref={(el) => {
+                        frames.current[id] = el;
+                      }}
+                      onLoad={() => send(id, { type: 'loaded', now: Date.now() })}
                       style={{
                         position: 'absolute',
                         inset: 0,
@@ -1319,20 +1667,6 @@ export function Workspace({
                         See plans
                       </Button>
                     </Cover>
-                  ) : b.kind === 'empty' ? (
-                    <Cover p="$3">
-                      <Picker
-                        hosts={live}
-                        onPick={(m) =>
-                          setBind((s) => ({
-                            ...s,
-                            [id]: { kind: 'shell', shell: { machine: m, name: mintName(takenOn(m)) } },
-                          }))
-                        }
-                        onNew={onLaunch ? () => boot(id, 'dev') : undefined}
-                        onCancel={() => doClose(id)}
-                      />
-                    </Cover>
                   ) : b.kind === 'starting' ? (
                     // The loader lives HERE, in the box the machine is for —
                     // not on the button that asked. It is what tells you the
@@ -1360,13 +1694,14 @@ export function Workspace({
                       {b.unfunded ? (
                         <>
                           <Note>
-                            A cloud machine is ours and costs credit. Top up your balance or run{' '}
+                            Your plan has no credit for a new cloud computer. Top up, run{' '}
                             <SizableText render="code" size="$1" fontFamily="$mono" color="$color">
                               hanzo link
                             </SizableText>{' '}
-                            on your own machine to open its shell for free.
+                            on a computer of your own to open its shell for free, or start a
+                            temporary cloud computer: its files will not be kept when it stops.
                           </Note>
-                          <XStack gap="$2" items="center">
+                          <XStack gap="$2" items="center" flexWrap="wrap" justify="center">
                             <Button
                               variant="default"
                               size="sm"
@@ -1374,13 +1709,27 @@ export function Workspace({
                             >
                               Top up balance
                             </Button>
-                            <Button variant="outline" size="sm" onPress={() => doClose(id)}>
+                            {b.start ? (
+                              // Never started on its own: the person picks it, in
+                              // words that say what it loses.
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={busy}
+                                onPress={() =>
+                                  void startMachine({ kind: b.start!, from: 'button', into: id, temporary: true })
+                                }
+                              >
+                                Start a temporary one (files will not be kept)
+                              </Button>
+                            ) : null}
+                            <Button variant="outline" size="sm" onPress={() => close(id)}>
                               Close pane
                             </Button>
                           </XStack>
                         </>
                       ) : (
-                        <Button variant="outline" size="sm" onPress={() => doClose(id)}>
+                        <Button variant="outline" size="sm" onPress={() => close(id)}>
                           Close pane
                         </Button>
                       )}
@@ -1395,9 +1744,9 @@ export function Workspace({
                         <SizableText size="$1" color="$color">
                           {b.shell.name}
                         </SizableText>{' '}
-                        shell is still there — tmux is holding it.
+                        shell is still there, kept on the machine.
                       </Note>
-                      <Button variant="outline" size="sm" onPress={() => doClose(id)}>
+                      <Button variant="outline" size="sm" onPress={() => close(id)}>
                         Close pane
                       </Button>
                     </Cover>
@@ -1408,67 +1757,65 @@ export function Workspace({
                         <Note>Enter a URL above to open a page.</Note>
                       </Cover>
                     )
-                  ) : !url ? (
-                    // No tunnel to frame — a box still coming up, or a link that
-                    // stopped serving. If the machine is offline or absent from
-                    // the fleet, offer to close the pane instead of waiting forever.
-                    !host || host.status === 'offline' ? (
-                      <Cover gap="$2">
-                        <Note>
-                          <SizableText size="$1" color="$color">
-                            {machine}
-                          </SizableText>{' '}
-                          is offline.
-                        </Note>
-                        <Button variant="outline" size="sm" onPress={() => doClose(id)}>
-                          Close pane
-                        </Button>
-                      </Cover>
-                    ) : (
-                      <Cover>
-                        <Note>
-                          Waiting for{' '}
-                          <SizableText size="$1" color="$color">
-                            {machine}
-                          </SizableText>{' '}
-                          to {b.kind === 'screen' ? 'show its screen' : 'serve a terminal'}. It
-                          appears here as soon as the machine is up.
-                        </Note>
-                      </Cover>
-                    )
-                  ) : refused[id] ? (
-                    // A frame that never said ready is a credential that no
-                    // longer opens anything — a spent ticket, an aged session —
-                    // and the URL cannot be reopened, only asked for again.
-                    // NEVER a sign-in here: the mint IS the sign-in, and sending
-                    // someone to a second one is what this stopped doing.
-                    <Cover gap="$3" bg={FRAME[scheme].ground}>
+                  ) : f === 'starting' ? (
+                    // A machine that is starting: its silence is the machine
+                    // booting, so it reads as progress, not failure.
+                    <Cover gap="$2" bg={FRAME[scheme].ground}>
+                      <Loader2
+                        size={20}
+                        color="var(--muted-foreground)"
+                        style={{ animation: 'spin 1s linear infinite' }}
+                      />
                       <Note>
-                        {b.kind === 'screen' ? 'The desktop' : 'The terminal'} did not come up.
-                        Reconnecting asks for a fresh credential and tries again.
+                        {seen?.words}
                       </Note>
-                      <Button variant="outline" minH={44} onPress={() => reconnect(id)}>
-                        Reconnect
+                    </Cover>
+                  ) : f === 'offline' ? (
+                    <Cover gap="$2">
+                      <Note>
+                        <SizableText size="$1" color="$color">
+                          {machine}
+                        </SizableText>{' '}
+                        is offline.
+                      </Note>
+                      <Button variant="outline" size="sm" onPress={() => close(id)}>
+                        Close pane
                       </Button>
-                      {host?.sandbox && onStop ? (
-                        <>
-                          <Note>
-                            {host.machine} is still running and counts against your plan until it
-                            is stopped.
-                          </Note>
-                          <Button
-                            variant="outline"
-                            minH={44}
-                            disabled={stopping[host.machine] === true}
-                            onPress={() => stop(host)}
-                          >
-                            {stopping[host.machine] === true ? 'Stopping…' : 'Stop machine'}
-                          </Button>
-                          {typeof stopping[host.machine] === 'string' ? (
-                            <Note>{stopping[host.machine]}</Note>
-                          ) : null}
-                        </>
+                    </Cover>
+                  ) : f === 'sign-in' ? (
+                    // The machine's own tunnel asked for a sign-in, which a
+                    // frame cannot show (the sign-in page refuses to be
+                    // framed). Signing in once in the browser sets the
+                    // session the frame then uses.
+                    <Cover gap="$3" bg={FRAME[scheme].ground}>
+                      <Note>Sign in to this machine in your browser first, then try again.</Note>
+                      {/* The machine may have left the list since: with no address
+                          of its own there is nothing to sign in to, only Try again. */}
+                      {host?.base ? (
+                        <Button
+                          variant="default"
+                          minH={44}
+                          onPress={() => window.open(host.base, '_blank', 'noopener,noreferrer')}
+                        >
+                          Sign in in your browser
+                        </Button>
                       ) : null}
+                      <Button variant="outline" minH={44} onPress={() => reconnect(id)}>
+                        Try again
+                      </Button>
+                    </Cover>
+                  ) : f === 'failed' ? (
+                    rescue()
+                  ) : f === 'waiting' ? (
+                    <Cover>
+                      <Note>
+                        Waiting for{' '}
+                        <SizableText size="$1" color="$color">
+                          {machine}
+                        </SizableText>{' '}
+                        to {b.kind === 'screen' ? 'show its screen' : 'serve a terminal'}. It
+                        appears here as soon as the machine is up.
+                      </Note>
                     </Cover>
                   ) : null}
                 </YStack>
@@ -1500,6 +1847,7 @@ export function Workspace({
                 }}
                 group
                 role="separator"
+                aria-label="Resize panes"
                 aria-orientation={d.dir === 'row' ? 'vertical' : 'horizontal'}
                 position="absolute"
                 z={20}
@@ -1561,6 +1909,7 @@ export function Workspace({
             bg="rgb(0 0 0 / 0.7)"
           >
             <Picker
+              ask={picking.kind === 'dev' ? 'Where should this shell run?' : 'Which desktop?'}
               hosts={picking.from}
               onPick={(m) => {
                 open(picking.make(m), picking.at);
@@ -1569,7 +1918,7 @@ export function Workspace({
               onNew={
                 onLaunch
                   ? () => {
-                      launch(picking.kind, picking.at);
+                      void startMachine({ kind: picking.kind, at: picking.at, from: 'picker' });
                       setPicking(null);
                     }
                   : undefined
@@ -1578,8 +1927,64 @@ export function Workspace({
             />
           </YStack>
         ) : null}
+        {question}
       </YStack>
     </YStack>
+  );
+}
+
+/**
+ * A question that interrupts: the stack's AlertDialog, so focus moves in and
+ * opens on the safe answer, Escape is that answer, Tab cannot reach the
+ * terminals behind it, and focus goes back where it was. The safe answer is
+ * always Cancel's slot; the one that starts or stops something is the Action.
+ */
+function Question({
+  q,
+  onAnswer,
+}: {
+  q: Ask;
+  onAnswer: (yes: boolean, remember: boolean) => void;
+}) {
+  const [remember, setRemember] = useState(false);
+  // The Action's press and the dialog's own close both arrive on a yes; the
+  // close is read a tick later so it can never overrule the press.
+  const picked = useRef(false);
+  const yes = () => {
+    picked.current = true;
+    onAnswer(true, remember);
+  };
+  return (
+    <AlertDialog
+      open
+      onOpenChange={(open: boolean) => {
+        if (!open) setTimeout(() => picked.current || onAnswer(false, false), 0);
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{q.title}</AlertDialogTitle>
+          <AlertDialogDescription>{q.say}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>{q.no ?? q.yes}</AlertDialogCancel>
+          {q.no ? <AlertDialogAction onPress={yes}>{q.yes}</AlertDialogAction> : null}
+        </AlertDialogFooter>
+        {/* After the answers, so the safe one is the first thing focused. */}
+        {q.remember ? (
+          <XStack items="center" gap="$2">
+            <Checkbox
+              id="hanzo-tabs-remember"
+              checked={remember}
+              onCheckedChange={(c: boolean | 'indeterminate') => setRemember(c === true)}
+            />
+            <Label htmlFor="hanzo-tabs-remember" size="$1">
+              {q.remember}
+            </Label>
+          </XStack>
+        ) : null}
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
@@ -1591,9 +1996,19 @@ export function Workspace({
  * and the reason it failed both belong to that pane. Keeping a spinner here too
  * would say the same thing twice, in the one place you are not looking.
  */
-function Act({ run, icon, label }: { run: () => void; icon: ReactNode; label: string }) {
+function Act({
+  run,
+  icon,
+  label,
+  disabled,
+}: {
+  run: () => void;
+  icon: ReactNode;
+  label: string;
+  disabled?: boolean;
+}) {
   return (
-    <Button variant="outline" size="sm" shrink={0} onPress={run}>
+    <Button variant="outline" size="sm" shrink={0} onPress={run} disabled={disabled}>
       {icon}
       <SizableText size="$1">{label}</SizableText>
     </Button>
@@ -1603,11 +2018,14 @@ function Act({ run, icon, label }: { run: () => void; icon: ReactNode; label: st
 /** Where should this shell run? Only ever shown when there is a real choice,
  *  and a new machine, where one can be started, is the first of them. */
 function Picker({
+  ask = 'Where should this shell run?',
   hosts,
   onPick,
   onNew,
   onCancel,
 }: {
+  /** The question, in the words of what is being opened. */
+  ask?: string;
   hosts: TerminalHost[];
   onPick: (machine: string) => void;
   onNew?: () => void;
@@ -1624,7 +2042,7 @@ function Picker({
       bg="var(--card)"
     >
       <SizableText mb="$2" size="$1" color="var(--muted-foreground)">
-        Where should this shell run?
+        {ask}
       </SizableText>
       <YStack render="ul" gap="$1">
         {onNew ? (
@@ -1640,7 +2058,7 @@ function Picker({
             >
               <Cloud size={14} color="var(--muted-foreground)" />
               <SizableText size="$2" numberOfLines={1} ellipsis>
-                New machine
+                New cloud computer
               </SizableText>
             </Button>
           </YStack>

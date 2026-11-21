@@ -8,8 +8,8 @@
  * enforces only what it was told, so a cloud that has not shipped the key never
  * turns paying users away.
  *
- * A tab is STREAMED when a pane holds a live shell or screen. A page, an empty
- * pane, a machine that is starting or gone holds no stream and counts for nothing.
+ * A tab is STREAMED when a pane holds a live shell or screen. A page, or a
+ * machine that is starting or gone, holds no stream and counts for nothing.
  */
 import { API, READ_TIMEOUT } from './api';
 import type { Binding } from './panes';
@@ -44,4 +44,19 @@ export function over(
 ): Set<string> {
   if (limit === null || limit < 0) return new Set();
   return new Set(order.filter((id) => bind[id] && streamed(bind[id]!)).slice(limit));
+}
+
+/**
+ * Whether one more streamed tab would be past the limit: a new machine started
+ * now would run, and bill, behind the plan's cover where nobody sees it. A plan
+ * that streams none (0) is always full; one that has not said (`null`) or has
+ * no cap (-1) never is.
+ */
+export function full(
+  order: readonly string[],
+  bind: Readonly<Record<string, Binding>>,
+  limit: number | null,
+): boolean {
+  if (limit === null || limit < 0) return false;
+  return order.filter((id) => bind[id] && streamed(bind[id]!)).length >= limit;
 }

@@ -7,13 +7,12 @@ import {
   label,
   machineOf,
   mintName,
-  rescued,
-  restore,
-  proves,
+  revive,
   safeName,
   shellUrl,
   web,
 } from '@/lib/panes';
+import { append, pane, paneIds } from '@/lib/tiles';
 
 /**
  * A pane's URL is the whole "new shell" mechanism, so the rules about it are the
@@ -100,23 +99,6 @@ describe('a framed page announces itself, and silence is the rescue', () => {
     expect(isReady(undefined)).toBe(false);
   });
 
-  it('leaves a pane alone until its terminal has had time to boot', () => {
-    // Nothing waited yet: still connecting. Drawing a rescue here would flash it
-    // over every pane on every load.
-    expect(rescued({}, {}, {})).toEqual({});
-    expect(rescued({ p0: false }, {}, { p0: true })).toEqual({});
-  });
-
-  it('rescues a pane that waited and never spoke', () => {
-    expect(rescued({ p0: true }, {}, { p0: true })).toEqual({ p0: true });
-    expect(rescued({ p0: true }, { p0: true }, { p0: true })).toEqual({ p0: false });
-  });
-
-  it('judges each pane on its own terminal', () => {
-    // One machine gated, one fine — the gated pane alone gets the way out.
-    expect(rescued({ p0: true, p1: true }, { p1: true }, { p0: true, p1: true })).toEqual({ p0: true, p1: false });
-  });
-
   it('waits long enough that a slow connect is not called dead', () => {
     expect(DEADLINE).toBeGreaterThanOrEqual(3000);
   });
@@ -132,9 +114,6 @@ describe('a pane bound to a screen is still bound to a machine', () => {
     expect(machineOf({ kind: 'shell', shell: { machine: 'desk', name: 'hanzo' } })).toBe('desk');
     expect(machineOf({ kind: 'screen', machine: 'desk' })).toBe('desk');
     expect(machineOf({ kind: 'gone', shell: { machine: 'desk', name: 'hanzo' } })).toBe('desk');
-    // A split with nothing chosen yet is bound to nothing, and saying so is what
-    // stops a mint being attempted for it.
-    expect(machineOf({ kind: 'empty' })).toBeNull();
   });
 
   it('names the machine and which of its faces, so a pane needs no key', () => {
@@ -152,7 +131,6 @@ describe('a pane bound to a screen is still bound to a machine', () => {
       'cloud-2 · build',
     );
     expect(label({ kind: 'screen', machine: 'desk-1' })).toBe('desk-1 · desk');
-    expect(label({ kind: 'empty' })).toBe('New shell');
   });
 });
 
@@ -179,24 +157,42 @@ describe('a pane can be waiting for a machine', () => {
     expect(label({ kind: 'failed', why: 'out of capacity' })).toBe('Could not start');
   });
 
-  it('comes back as the pane that asks, never as one still waiting', () => {
-    // The promise died with the page, so nothing will ever settle a restored
-    // `starting` — it would spin for a machine nobody is waiting on. And a
-    // restored `failed` states a reason about a moment that has passed.
-    expect(restore({ kind: 'starting', want: 'shell' })).toEqual({ kind: 'empty' });
-    expect(restore({ kind: 'starting', want: 'screen' })).toEqual({ kind: 'empty' });
-    expect(restore({ kind: 'failed', why: 'out of capacity' })).toEqual({ kind: 'empty' });
+  // A saved layout of four columns: what each one held when the tab closed.
+  const tree = append(append(append(pane('a'), 'b'), 'c'), 'd');
+  const known = new Set(['desk']);
+
+  it('closes a pane whose launch died with the page, and one that had failed', () => {
+    const { tree: t, bind } = revive(
+      tree,
+      {
+        a: { kind: 'shell', shell: { machine: 'desk', name: 'build' } },
+        b: { kind: 'starting', want: 'shell' },
+        c: { kind: 'failed', why: 'out of capacity' },
+        d: { kind: 'empty' }, // what an older version saved for a split never filled
+      },
+      known,
+    );
+    expect(t && paneIds(t)).toEqual(['a']);
+    expect(Object.keys(bind)).toEqual(['a']);
   });
 
-  it('leaves a pane that is showing something alone', () => {
-    const shell = { kind: 'shell', shell: { machine: 'desk', name: 'build' } } as const;
-    const screen = { kind: 'screen', machine: 'desk' } as const;
-    const gone = { kind: 'gone', shell: { machine: 'desk', name: 'build' } } as const;
-    expect(restore(shell)).toBe(shell);
-    expect(restore(screen)).toBe(screen);
-    // A machine that went away is the ONE waiting state that survives a reload:
-    // tmux is still holding that session, so the pane is still about something.
-    expect(restore(gone)).toBe(gone);
+  it('keeps what can show something, and a gone shell comes back as a shell', () => {
+    const { tree: t, bind } = revive(
+      tree,
+      {
+        a: { kind: 'shell', shell: { machine: 'desk', name: 'build' } },
+        b: { kind: 'screen', machine: 'desk' },
+        c: { kind: 'gone', shell: { machine: 'desk', name: 'old' } },
+        d: { kind: 'page', url: 'https://hanzo.ai' },
+      },
+      known,
+    );
+    expect(t && paneIds(t)).toEqual(['a', 'b', 'c', 'd']);
+    expect(bind.c).toEqual({ kind: 'shell', shell: { machine: 'desk', name: 'old' } });
+  });
+
+  it('closes panes on machines that are not there, and leaves nothing when none survives', () => {
+    expect(revive(tree, { a: { kind: 'screen', machine: 'gone-box' } }, known).tree).toBeNull();
   });
 });
 
@@ -247,22 +243,7 @@ describe('a browser pane', () => {
     // Nothing was running, so nothing is stale: a url survives a reload the way
     // a shell name does.
     const page = { kind: 'page' as const, url: 'https://hanzo.ai' };
-    expect(restore(page)).toEqual(page);
+    expect(revive(pane('p'), { p: page }, new Set()).bind.p).toEqual(page);
   });
 
-  it('owes this workspace no word that it came up', () => {
-    // A page on the open web will never post `hanzo-term`. Judged by its
-    // silence it would be covered by a rescue six seconds after loading,
-    // offering to reconnect a site already on screen and working.
-    expect(proves({ kind: 'page', url: 'https://hanzo.ai' })).toBe(false);
-    expect(proves({ kind: 'shell', shell: { machine: 'm', name: 'shell-1' } })).toBe(true);
-    expect(proves({ kind: 'screen', machine: 'm' })).toBe(true);
-  });
-
-  it('is never rescued, however long it stays quiet', () => {
-    const waited = { page: true, term: true };
-    const alive = {};
-    const proving = { page: false, term: true };
-    expect(rescued(waited, alive, proving)).toEqual({ term: true });
-  });
 });

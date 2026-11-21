@@ -62,6 +62,60 @@ The terminal client itself lives in [`hanzoai/cli`](https://github.com/hanzoai/c
 (`assets/term/`) — xterm.js, themed, with a touch key row — because it is served
 by the machine, not by this site.
 
+## Hosting the workspace: starting and stopping cloud computers
+
+A cloud computer costs money on the person's plan, so the workspace never starts
+or leaves one running without the person knowing. A host (tabs.hanzo.ai, the
+desktop app, hanzo.ai) passes these props:
+
+```ts
+<Workspace
+  hosts={fleet.hosts}
+  mint={fleet.mint}
+  streams={fleet.streams}            // number | null: the plan's tab limit
+  account={fleet.account}            // string | null: whose "Don't ask again"
+  onLaunch={fleet.launch}            // (kind: Kind, opts: { temporary: boolean }) => Promise<string>
+  onStop={fleet.stop}                // (host: TerminalHost) => Promise<void>
+  confirmLease={hostConfirm}         // optional: (ask: StartAsk) => boolean | Promise<boolean>
+/>
+```
+
+- **Every new machine goes through one start path**, whatever asked for it
+  (toolbar, split, picker, the host's `hanzo:tabs-action` menu, the temporary
+  machine offered when credit runs out). One start is in flight at a time; a
+  second press while one is asking or starting does nothing.
+- **`confirmLease`, when passed, is the ONLY asker.** The workspace then never
+  asks a question of its own before a start, and shows no "Don't ask again".
+  It is called once per start with everything the person must be told:
+
+  ```ts
+  type StartAsk = {
+    kind: 'dev' | 'desktop' | 'browser';
+    temporary: boolean;   // keeps no files: they are lost when it stops
+    beyond: boolean;      // the plan's streamed-tab limit is reached: it would run unseen
+    limit: number | null; // that limit: 0 none, N a cap, -1 no cap, null not told
+    from: 'button' | 'split' | 'menu' | 'picker';
+    expires: number;      // ms since the epoch (Date.now()): the answer's deadline
+  };
+  ```
+
+  Only an answer of exactly `true` before `expires` (two minutes after the ask)
+  starts the machine. `false`, any other value, a throw, a rejection or a later
+  answer starts nothing — so at `expires` the host should close its question
+  and say that nothing was started.
+- **Without `confirmLease`** the workspace asks with the stack's AlertDialog, and
+  offers "Don't ask again" per account and per class of machine — never for a
+  temporary machine, never when the plan is unknown (`streams` null), has no
+  streams (0) or is full. "Ask before starting again" in the toolbar undoes it.
+- **`onLaunch(kind, { temporary })`** starts the machine and answers the name it
+  goes by in `hosts`. `temporary: true` is sent only after the person chose a
+  machine that keeps no files, in those words.
+- **`onStop(host)`** stops one. Closing the last pane on a cloud machine (or one
+  this workspace started that is still pending) asks "Keep it running" or "Stop
+  it"; for a temporary machine the question says its files will be lost, and
+  keeping it is the answer focused first. Without `onStop` the person is told it
+  is still running.
+
 ## Develop
 
 ```bash
