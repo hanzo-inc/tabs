@@ -12,7 +12,6 @@ import {
   safeName,
   shellUrl,
   tabItems,
-  termCommand,
   web,
 } from '@/lib/panes';
 import { append, pane, paneIds } from '@/lib/tiles';
@@ -285,29 +284,5 @@ describe('the open panes as a host lists them', () => {
     const items = tabItems(['zz', 'a'], bind, null, status);
     expect(items.map((i) => i.id)).toEqual(['a']);
     expect(items.some((i) => i.active)).toBe(false);
-  });
-});
-
-describe('what a terminal page may ask of its pane', () => {
-  it('is a split in a direction, or a close', () => {
-    expect(termCommand({ source: 'hanzo-term', split: 'row' })).toEqual({ split: 'row' });
-    expect(termCommand({ source: 'hanzo-term', split: 'col' })).toEqual({ split: 'col' });
-    expect(termCommand({ source: 'hanzo-term', close: true })).toEqual({ close: true });
-  });
-
-  it('is nothing else: no other source, direction or truthy stand-in', () => {
-    expect(termCommand({ source: 'other', close: true })).toBeNull();
-    expect(termCommand({ source: 'hanzo-term', split: 'diagonal' })).toBeNull();
-    expect(termCommand({ source: 'hanzo-term', close: 'yes' })).toBeNull();
-    expect(termCommand({ source: 'hanzo-term', ready: true })).toBeNull();
-    expect(termCommand(null)).toBeNull();
-    expect(termCommand('hanzo-term')).toBeNull();
-  });
-
-  it('never makes a ready message a command, nor a command the word that a pane is ready', () => {
-    expect(termCommand({ source: 'hanzo-term', ready: true })).toBeNull();
-    // A command carries the terminal's source, so it would also pass `isReady`:
-    // the workspace reads commands FIRST, and this is why it must.
-    expect(isReady({ source: 'hanzo-term', split: 'row' })).toBe(true);
   });
 });

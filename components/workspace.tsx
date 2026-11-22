@@ -129,7 +129,6 @@ import {
   web,
   revive,
   tabItems,
-  termCommand,
   within,
 } from '../lib/panes';
 import { shortcut } from '../lib/keys';
@@ -458,10 +457,9 @@ export function Workspace({
   streams?: number | null;
   /** Claim ⌘D / ⌘⇧D (split right / down), ⌘W (close the focused pane) and
    *  ⌘= ⌘- ⌘0 (type size) for the workspace, from this document. It also admits the split
-   *  and close that arrive as `hanzo:tabs-action` events and as a terminal
-   *  page's message; with it off those are ignored. Off by default: in a
-   *  browser tab these keys are the browser's. A host with no browser around it (a desktop webview) turns
-   *  it on. */
+   *  and close that arrive as `hanzo:tabs-action` events; with it off those are
+   *  ignored. Off by default: in a browser tab these keys are the browser's. A
+   *  host with no browser around it (a desktop webview) turns it on. */
   shortcuts?: boolean;
   /** The narrowest a pane may be, in px, before the row scrolls sideways
    *  instead of squeezing every pane narrower. Absent, panes share the width
@@ -989,22 +987,6 @@ export function Workspace({
 
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
-      // A terminal page asking for a split or a close (`termCommand`): said
-      // for ITS pane, so that pane is the target, and a framed web page has no
-      // such say.
-      const cmd = termCommand(e.data);
-      if (cmd) {
-        if (!shortcuts) return;
-        for (const [id, el] of Object.entries(frames.current)) {
-          if (el && within(e.source, el.contentWindow, window)) {
-            if (bindNow.current[id]?.kind === 'page') return;
-            setFocus(id);
-            act.current('close' in cmd ? { kind: 'close', id } : { kind: 'split', dir: cmd.split, id });
-            return;
-          }
-        }
-        return;
-      }
       if (!isReady(e.data)) return;
       // The sender identifies the pane: a message is trusted only when it comes
       // from inside a frame this workspace actually rendered — its window or
@@ -1024,7 +1006,7 @@ export function Workspace({
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [size, send, shortcuts]);
+  }, [size, send]);
 
   // The reader's type size, told to every terminal that is up.
   //

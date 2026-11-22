@@ -18,7 +18,7 @@
  * scrollback is still there. There is no spawn endpoint because none is needed.
  */
 
-import { type Dir, type Tile, closePane, paneIds } from './tiles';
+import { type Tile, closePane, paneIds } from './tiles';
 
 /** A machine that can serve shells: its name and the tunnel its terminals live on. */
 export interface TerminalHost {
@@ -364,20 +364,4 @@ export function tabItems(
         b.kind === 'page' ? 'online' : b.kind === 'starting' ? 'pending' : b.kind === 'shell' || b.kind === 'screen' ? (m && statusOf(m)) || 'offline' : 'offline';
       return { id, title: label(b), status, active: id === focus };
     });
-}
-
-/**
- * What a framed terminal page may ask of its pane, besides saying it is ready:
- * `{ source: 'hanzo-term', split: 'row' | 'col' }` or `{ source: 'hanzo-term',
- * close: true }`. A page cannot reach its parent's keyboard, so the keys the
- * workspace claims (`lib/keys`) are posted up from inside the frame.
- */
-export type TermCommand = { split: Dir } | { close: true };
-
-export function termCommand(data: unknown): TermCommand | null {
-  if (typeof data !== 'object' || data === null) return null;
-  const d = data as { source?: unknown; split?: unknown; close?: unknown };
-  if (d.source !== 'hanzo-term') return null;
-  if (d.close === true) return { close: true };
-  return d.split === 'row' || d.split === 'col' ? { split: d.split } : null;
 }

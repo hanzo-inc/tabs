@@ -5,8 +5,7 @@ import { cloud } from './standin';
 /**
  * What a webview host (the desktop app) turns on, measured in a real browser:
  * a row of panes that scrolls instead of squeezing (`minPane`), the keys the
- * workspace claims (`shortcuts`), a terminal page that asks for a split or a
- * close, and the open panes announced for the host's own tab strip. The host is
+ * workspace claims (`shortcuts`), the split and close a host asks for, and the open panes announced for the host's own tab strip. The host is
  * app/e2e/page.e2e.tsx; the cloud is e2e/standin.ts.
  */
 const panes = (page: Page) => page.locator('iframe[data-pane]');
@@ -106,28 +105,22 @@ test.describe('a webview host', () => {
     expect(await focused(0)).toBe('false');
   });
 
-  test('a terminal page can ask for a split or a close, with shortcuts on, and only for its own pane', async ({ page }) => {
+  test('with shortcuts, the host can ask for a split and a close by event', async ({ page }) => {
     const { made } = await cloud(page);
     await page.goto('/e2e/?shortcuts=1');
     await open(page, 2);
-    const second = page.frames().find((f) => f.url().includes('/m_2/terminal'))!;
-    await second.evaluate(() => parent.postMessage({ source: 'hanzo-term', split: 'row' }, '*'));
+    const ask = (detail: object) => page.evaluate((d) => window.dispatchEvent(new CustomEvent('hanzo:tabs-action', { detail: d })), detail);
+    await ask({ kind: 'split', dir: 'row' });
     await expect(panes(page)).toHaveCount(3);
     expect(made).toHaveLength(3);
-    await second.evaluate(() => parent.postMessage({ source: 'hanzo-term', close: true }, '*'));
-    await expect(panes(page)).toHaveCount(2);
-    // The page itself is not a frame of the workspace: its word is no command.
-    await page.evaluate(() => postMessage({ source: 'hanzo-term', close: true }, '*'));
+    await ask({ kind: 'close' });
     await expect(panes(page)).toHaveCount(2);
   });
 
-  test('without shortcuts a terminal page\'s split and close, and the host\'s, do nothing', async ({ page }) => {
+  test('without shortcuts the host\'s split and close do nothing', async ({ page }) => {
     const { made } = await cloud(page);
     await page.goto('/e2e/');
     await open(page, 2);
-    const second = page.frames().find((f) => f.url().includes('/m_2/terminal'))!;
-    await second.evaluate(() => parent.postMessage({ source: 'hanzo-term', split: 'row' }, '*'));
-    await second.evaluate(() => parent.postMessage({ source: 'hanzo-term', close: true }, '*'));
     await page.evaluate(() => {
       window.dispatchEvent(new CustomEvent('hanzo:tabs-action', { detail: { kind: 'split', dir: 'row' } }));
       window.dispatchEvent(new CustomEvent('hanzo:tabs-action', { detail: { kind: 'close' } }));
@@ -137,26 +130,47 @@ test.describe('a webview host', () => {
     expect(made).toHaveLength(2);
   });
 
-  test('dragging a divider on a scrolled row does not drag the view back to the focused pane', async ({ page }) => {
+  test('a workspace that starts empty and then gets a machine still honours minPane', async ({ page }) => {
+    await cloud(page);
+    await page.goto('/e2e/?minPane=420');
+    await expect(page.getByText('No machine is serving terminals.')).toBeVisible();
+    await open(page, 4); // the first from the empty state, the rest from the toolbar
+    for (const w of await widths(page)) expect(w).toBeGreaterThanOrEqual(419);
+    expect(await scrolled(page)).not.toBeNull();
+  });
+
+  test('dragging a divider on a scrolled row moves it, and does not drag the view back to the focused pane', async ({ page }) => {
     await cloud(page);
     await page.goto('/e2e/?minPane=420');
     await open(page, 4);
+    const scrollLeft = () =>
+      page.evaluate(() => [...document.querySelectorAll<HTMLElement>('*')].find((e) => getComputedStyle(e).overflowX === 'auto' && e.scrollWidth > e.clientWidth)!.scrollLeft);
+    // Focus the first pane, then scroll away from it to the end.
     await page.locator('[data-slot="pane-name"]').first().click();
     await page.evaluate(() => {
       const el = [...document.querySelectorAll<HTMLElement>('*')].find((e) => getComputedStyle(e).overflowX === 'auto' && e.scrollWidth > e.clientWidth)!;
       el.scrollTo({ left: el.scrollWidth });
     });
-    const left = () =>
-      page.evaluate(() => [...document.querySelectorAll<HTMLElement>('*')].find((e) => getComputedStyle(e).overflowX === 'auto' && e.scrollWidth > e.clientWidth)!.scrollLeft);
-    const before = await left();
-    expect(before).toBeGreaterThan(100);
+    await expect.poll(scrollLeft).toBeGreaterThan(100);
+    const before = await scrollLeft();
+    const w0 = await widths(page);
     const seam = (await page.getByRole('separator').last().boundingBox())!;
-    await page.mouse.move(seam.x + seam.width / 2, seam.y + seam.height / 2);
+    const y = seam.y + seam.height / 2;
+    await page.mouse.move(seam.x + seam.width / 2, y);
     await page.mouse.down();
-    await page.mouse.move(seam.x - 60, seam.y + seam.height / 2, { steps: 6 });
-    await page.waitForTimeout(400);
-    expect(Math.abs((await left()) - before)).toBeLessThan(5);
+    await page.mouse.move(seam.x - 80, y, { steps: 8 });
+    await page.waitForTimeout(600); // past the smooth scroll a re-focus would start
+    const during = await scrollLeft();
     await page.mouse.up();
+    await page.waitForTimeout(600);
+    const w1 = await widths(page);
+    // The divider moved: some pane's share of the row changed. (A pane under minPane makes the
+    // canvas grow, so compare shares, not pixels.)
+    const share = (w: number[], i: number) => w[i]! / w.reduce((x, y) => x + y, 0);
+    expect(Math.max(...w0.map((_, i) => Math.abs(share(w1, i) - share(w0, i))))).toBeGreaterThan(0.02);
+    // And the view did not jump, during the drag or after it.
+    expect(Math.abs(during - before)).toBeLessThan(5);
+    expect(Math.abs((await scrollLeft()) - before)).toBeLessThan(5);
   });
 
   test('the open panes are announced for the host\'s own tab strip', async ({ page }) => {

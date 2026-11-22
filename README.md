@@ -132,9 +132,7 @@ unchanged.
 - **`shortcuts`** is for hosts that own the window: in a browser those keys are
   the browser's. Command only; Control stays the terminal's (Ctrl+D, Ctrl+W).
   ⌘W with no pane to close is left to the host.
-- **A terminal page** may post `{ source: 'hanzo-term', split: 'row' | 'col' }` or
-  `{ source: 'hanzo-term', close: true }` to split or close its own pane, and the
-  host may ask for `split` and `close` on `hanzo:tabs-action`: both only with
+- **`split` and `close` on `hanzo:tabs-action`** are honoured only with
   `shortcuts` on, and ignored otherwise.
 - **The host's tab strip** hears `hanzo:tabs-state` with `{ bind, items, focus }`
   (`items`: `{ id, title, status, active }` per open pane, in order); the same is
