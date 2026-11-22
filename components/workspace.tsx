@@ -133,7 +133,6 @@ import {
   within,
 } from '../lib/panes';
 import { shortcut } from '../lib/keys';
-import { isTerminalPage, sandboxFor, useInline } from '../lib/inline';
 import { UPGRADE, full, over } from '../lib/plan';
 import {
   type Come,
@@ -414,7 +413,6 @@ export function Workspace({
   agent,
   streams = null,
   shortcuts = false,
-  inlineFrames = false,
   minPane,
   start,
   end,
@@ -459,18 +457,12 @@ export function Workspace({
    *  a cloud computer ask first ("Don't ask again" needs a plan to lean on). */
   streams?: number | null;
   /** Claim ⌘D / ⌘⇧D (split right / down), ⌘W (close the focused pane) and
-   *  ⌘= ⌘- ⌘0 (type size) for the workspace, from this document and, with
-   *  `inlineFrames`, from inside the terminal frames. It also admits the split
+   *  ⌘= ⌘- ⌘0 (type size) for the workspace, from this document. It also admits the split
    *  and close that arrive as `hanzo:tabs-action` events and as a terminal
    *  page's message; with it off those are ignored. Off by default: in a
    *  browser tab these keys are the browser's. A host with no browser around it (a desktop webview) turns
    *  it on. */
   shortcuts?: boolean;
-  /** Fetch each terminal page here and frame it as a `blob:` document, for a
-   *  host whose own origin the terminal's `frame-ancestors` does not list (a
-   *  desktop webview). Only the cloud's own terminal address is fetched, and
-   *  the frame is sandboxed without `allow-same-origin`. See `lib/inline`. */
-  inlineFrames?: boolean;
   /** The narrowest a pane may be, in px, before the row scrolls sideways
    *  instead of squeezing every pane narrower. Absent, panes share the width
    *  however many there are. */
@@ -1217,15 +1209,6 @@ export function Workspace({
     [],
   );
 
-  // With `inlineFrames`, a terminal's address is fetched here and framed as a blob
-  // (lib/inline); the frame waits for it, and a fetch that fails is the same silence
-  // as any other failure, which the come-up machine ends in its rescue.
-  const docs = useInline(
-    rendered.map((id) => (capped.has(id) || bind[id]?.kind === 'page' ? null : address(come[id]))),
-    inlineFrames,
-    shortcuts,
-  );
-
   /** Reconnect a pane: the come-up begins again, with a fresh address. */
   const reconnect = (id: string) => {
     const b = bindNow.current[id];
@@ -1636,8 +1619,6 @@ export function Workspace({
             // A page's url IS its binding — there is no credential to mint and
             // nothing spent by framing it. Everything else waits for the mint.
             const url = capped.has(id) ? null : b.kind === 'page' ? b.url : address(come[id]);
-            const inlined = !!url && inlineFrames && isTerminalPage(url);
-            const frame = inlined ? docs[url!] : url;
             // The one way out for a pane whose terminal did not come up — a
             // frame that never said ready, or an address that never arrived.
             // A frame that never said ready is a credential that no longer
@@ -1778,18 +1759,18 @@ export function Workspace({
 
                 <XStack flex={1} minH={0} flexDirection={paging ? 'column' : 'row'}>
                 <YStack position="relative" flex={1} minH={0} bg={FRAME[scheme].ground}>
-                  {frame ? (
+                  {url ? (
                     <iframe
                       // One frame per address, so a fresh ticket is a fresh
                       // frame and `spend` sees every load of an address.
                       key={url}
                       data-pane={id}
-                      src={frame}
+                      src={url}
                       title={title}
                       // Scripts (a terminal is one), and `allow-same-origin` gives
                       // the frame ITS OWN origin — which ttyd needs for its socket
                       // — never ours. What is withheld is top-navigation and popups.
-                      sandbox={sandboxFor(inlined)}
+                      sandbox="allow-scripts allow-same-origin allow-forms"
                       ref={(el) => {
                         frames.current[id] = el;
                       }}

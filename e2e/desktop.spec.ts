@@ -137,37 +137,6 @@ test.describe('a webview host', () => {
     expect(made).toHaveLength(2);
   });
 
-  test('inlineFrames: the page is fetched, framed as a blob with no same-origin, pointed at its ticket, and released', async ({ page }) => {
-    await cloud(page, [], { inline: true });
-    await page.goto('/e2e/?inline=1');
-    await page.getByRole('button', { name: 'New cloud computer' }).click();
-    const frame = panes(page).first();
-    await expect(frame).toHaveAttribute('src', /^blob:/);
-    const sandbox = await frame.getAttribute('sandbox');
-    expect(sandbox).not.toContain('allow-same-origin');
-    await expect(page.frameLocator('iframe[data-pane]').first().getByText('TERMINAL m_1')).toBeVisible();
-    await expect(page.getByText('The terminal did not come up.')).toHaveCount(0);
-    const inner = page.frames().find((f) => f.url().startsWith('blob:'))!;
-    expect(await inner.evaluate(() => (window as unknown as { socket: string }).socket)).toBe(
-      'wss://api.hanzo.ai/v1/sandbox/m_1/terminal/ws?ticket=tk&arg=shell-1',
-    );
-    // Its own origin is opaque: the host's storage is out of its reach.
-    expect(await inner.evaluate(() => { try { return localStorage.length >= 0 ? 'reached' : ''; } catch { return 'refused'; } })).toBe('refused');
-
-    // A second pane, then close it: its blob is released, the first one's is not.
-    await page.getByRole('button', { name: 'New cloud computer' }).click();
-    await expect(panes(page)).toHaveCount(2);
-    await expect(panes(page).nth(1)).toHaveAttribute('src', /^blob:/);
-    const kept = (await panes(page).nth(0).getAttribute('src'))!;
-    const gone = (await panes(page).nth(1).getAttribute('src'))!;
-    const alive = (u: string) => page.evaluate((x) => fetch(x).then(() => 'alive', () => 'revoked'), u);
-    expect(await alive(gone)).toBe('alive');
-    await page.locator('[data-slot="pane-close"]').nth(1).click();
-    await expect(panes(page)).toHaveCount(1);
-    await expect.poll(() => alive(gone)).toBe('revoked');
-    expect(await alive(kept)).toBe('alive');
-  });
-
   test('dragging a divider on a scrolled row does not drag the view back to the focused pane', async ({ page }) => {
     await cloud(page);
     await page.goto('/e2e/?minPane=420');

@@ -10,8 +10,7 @@
  * answers, an account the test can change mid-session, and a menu of its own
  * outside the workspace that asks by `hanzo:tabs-action`, as @hanzo/app's does.
  *
- * `?shortcuts=1` and `?minPane=420` pass those props, and `?inline=1` passes
- * `inlineFrames`. `?confirm=host` passes the confirm. Each ask is pushed to
+ * `?shortcuts=1` and `?minPane=420` pass those props. `?confirm=host` passes the confirm. Each ask is pushed to
  * `window.__tabs.asks`, and the test answers it with `window.__tabs.answer(v)`:
  * a value resolves it, `'throw'` rejects it.
  */
@@ -67,7 +66,6 @@ export default function Host() {
             onStop={stop}
             confirmLease={confirmLease}
             shortcuts={query.get('shortcuts') === '1'}
-            inlineFrames={query.get('inline') === '1'}
             minPane={Number(query.get('minPane')) || undefined}
             end={
               <Button variant="ghost" size="sm" onPress={() => setAccount((a) => (a === 'e2e' ? 'other' : 'e2e'))}>
