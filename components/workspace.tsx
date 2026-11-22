@@ -133,7 +133,7 @@ import {
   within,
 } from '../lib/panes';
 import { shortcut } from '../lib/keys';
-import { isTerminalPage, useInline } from '../lib/inline';
+import { isTerminalPage, sandboxFor, useInline } from '../lib/inline';
 import { UPGRADE, full, over } from '../lib/plan';
 import {
   type Come,
@@ -460,13 +460,16 @@ export function Workspace({
   streams?: number | null;
   /** Claim ⌘D / ⌘⇧D (split right / down), ⌘W (close the focused pane) and
    *  ⌘= ⌘- ⌘0 (type size) for the workspace, from this document and, with
-   *  `inlineFrames`, from inside the terminal frames. Off by default: in a browser tab these keys are
-   *  the browser's. A host with no browser around it (a desktop webview) turns
+   *  `inlineFrames`, from inside the terminal frames. It also admits the split
+   *  and close that arrive as `hanzo:tabs-action` events and as a terminal
+   *  page's message; with it off those are ignored. Off by default: in a
+   *  browser tab these keys are the browser's. A host with no browser around it (a desktop webview) turns
    *  it on. */
   shortcuts?: boolean;
   /** Fetch each terminal page here and frame it as a `blob:` document, for a
    *  host whose own origin the terminal's `frame-ancestors` does not list (a
-   *  desktop webview). See `lib/inline`. */
+   *  desktop webview). Only the cloud's own terminal address is fetched, and
+   *  the frame is sandboxed without `allow-same-origin`. See `lib/inline`. */
   inlineFrames?: boolean;
   /** The narrowest a pane may be, in px, before the row scrolls sideways
    *  instead of squeezing every pane narrower. Absent, panes share the width
@@ -874,7 +877,9 @@ export function Workspace({
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [ready]);
+    // The box is not there while the workspace shows its empty state, and a
+    // box that appears later (the first machine, the first pane) is a new element.
+  }, [ready, live.length === 0 && !tile]);
 
   // The breakpoint is the ROOM, not the device: a phone in landscape and a narrow
   // desktop window have the same problem, and neither can hold two terminals.
@@ -930,14 +935,19 @@ export function Workspace({
     };
   }, [drag, scrolls, canvas]);
 
-  // The focused pane is brought into view on a scrolled canvas.
+  // The focused pane is brought into view on a scrolled canvas when focus moves
+  // (or the canvas starts to scroll), never while a divider is dragged: every
+  // step of a drag re-lays the panes, and following the focus then fights the pointer.
+  const lay = useRef({ placed, canvas, drag });
+  lay.current = { placed, canvas, drag };
   useEffect(() => {
     const el = scroller.current;
-    const r = focus ? placed.get(focus) : undefined;
-    if (!scrolls || !el || !r) return;
-    const to = scrollFor(r, canvas, el.scrollLeft, el.clientWidth);
+    const { placed: now, canvas: width, drag: dragging } = lay.current;
+    const r = focus ? now.get(focus) : undefined;
+    if (!scrolls || !el || !r || dragging) return;
+    const to = scrollFor(r, width, el.scrollLeft, el.clientWidth);
     if (to !== null) el.scrollTo({ left: to, behavior: 'smooth' });
-  }, [focus, scrolls, placed, canvas]);
+  }, [focus, scrolls]);
 
   // Click-to-focus from INSIDE a frame: the click never reaches this document,
   // but the window losing focus does, and activeElement is then the iframe.
@@ -992,6 +1002,7 @@ export function Workspace({
       // such say.
       const cmd = termCommand(e.data);
       if (cmd) {
+        if (!shortcuts) return;
         for (const [id, el] of Object.entries(frames.current)) {
           if (el && within(e.source, el.contentWindow, window)) {
             if (bindNow.current[id]?.kind === 'page') return;
@@ -1021,7 +1032,7 @@ export function Workspace({
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [size, send]);
+  }, [size, send, shortcuts]);
 
   // The reader's type size, told to every terminal that is up.
   //
@@ -1299,12 +1310,14 @@ export function Workspace({
           if (a.id && bind[a.id]) setFocus(a.id);
           return;
         case 'split': {
+          if (!shortcuts) return;
           const target = a.id && bind[a.id] ? a.id : (focus ?? rendered[0] ?? null);
           if (target) split(a.dir === 'col' ? 'col' : 'row', target);
           else act.current({ kind: 'shell' });
           return;
         }
         case 'close': {
+          if (!shortcuts) return;
           const target = a.id && bind[a.id] ? a.id : (focus ?? rendered[0] ?? null);
           if (!target) return;
           close(target);
@@ -1623,7 +1636,8 @@ export function Workspace({
             // A page's url IS its binding — there is no credential to mint and
             // nothing spent by framing it. Everything else waits for the mint.
             const url = capped.has(id) ? null : b.kind === 'page' ? b.url : address(come[id]);
-            const frame = url && inlineFrames && isTerminalPage(url) ? docs[url] : url;
+            const inlined = !!url && inlineFrames && isTerminalPage(url);
+            const frame = inlined ? docs[url!] : url;
             // The one way out for a pane whose terminal did not come up — a
             // frame that never said ready, or an address that never arrived.
             // A frame that never said ready is a credential that no longer
@@ -1775,7 +1789,7 @@ export function Workspace({
                       // Scripts (a terminal is one), and `allow-same-origin` gives
                       // the frame ITS OWN origin — which ttyd needs for its socket
                       // — never ours. What is withheld is top-navigation and popups.
-                      sandbox="allow-scripts allow-same-origin allow-forms"
+                      sandbox={sandboxFor(inlined)}
                       ref={(el) => {
                         frames.current[id] = el;
                       }}

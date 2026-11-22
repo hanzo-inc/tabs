@@ -15,7 +15,7 @@ const PAGE = (source: string, text: string) =>
 export async function cloud(
   page: Page,
   rows: Row[] = [],
-  o: { noCredit?: boolean; pending?: boolean; ticketFails?: boolean; ticketFailures?: number; slowStart?: number } = {},
+  o: { noCredit?: boolean; pending?: boolean; ticketFails?: boolean; ticketFailures?: number; slowStart?: number; inline?: boolean } = {},
 ) {
   let failures = o.ticketFailures ?? 0;
   const made: { class: string; project?: string }[] = [];
@@ -82,8 +82,26 @@ export async function cloud(
     }
     const door = path.match(/^\/v1\/sandbox\/([^/]+)\/(terminal|screen)$/);
     if (door) {
+      // The page inlined by the workspace is fetched with credentials, so it
+      // answers CORS for the one origin, and reads its socket the way the cloud's does.
+      const doorCors = o.inline
+        ? { 'access-control-allow-origin': 'http://127.0.0.1:4321', 'access-control-allow-credentials': 'true' }
+        : undefined;
+      if (o.inline && door[2] === 'terminal' && req.method() === 'GET') {
+        return route.fulfill({
+          contentType: 'text/html',
+          headers: doorCors,
+          body: `<!doctype html><title>t</title><body style="background:#000;color:#0f0">TERMINAL ${door[1]}
+<script>
+  var socket = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + location.pathname + '/ws' + location.search;
+  var ws = new WebSocket(socket);
+</script>
+<script>parent.postMessage({ source: 'hanzo-term' }, '*')</script></body>`,
+        });
+      }
       return route.fulfill({
         contentType: 'text/html',
+        headers: doorCors,
         body: doorPage.silent
           ? `<!doctype html><body>SILENT ${door[1]}`
           : door[2] === 'screen'

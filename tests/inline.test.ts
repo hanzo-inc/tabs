@@ -1,4 +1,4 @@
-import { BRIDGE, inlineHtml, isTerminalPage, socketOf } from '@/lib/inline';
+import { BRIDGE, inlineHtml, isTerminalPage, sandboxFor, socketOf } from '@/lib/inline';
 
 /** The shape of the cloud terminal page the inliner points: inline scripts, and a
  *  socket address built from the page's own location. */
@@ -11,17 +11,38 @@ const PAGE = `<!doctype html><html><body><div id="t"></div>
 </body></html>`;
 const URL_ = 'https://api.hanzo.ai/v1/sandboxes/abc123/terminal?ticket=t1&arg=shell-1';
 
-const blobs = () => {
-  const made: string[] = [];
-  return { made, script: (code: string) => (made.push(code), `blob:s${made.length}`) };
-};
-
 describe('which pages are inlined', () => {
   it('only the cloud terminal page', () => {
     expect(isTerminalPage(URL_)).toBe(true);
     expect(isTerminalPage('https://api.hanzo.ai/v1/sandbox/abc/terminal')).toBe(true);
     expect(isTerminalPage('https://api.hanzo.ai/v1/sandboxes/abc/screen?ticket=x')).toBe(false);
     expect(isTerminalPage('https://machine.example/ttyd')).toBe(false);
+  });
+
+  it('only on the cloud\'s own origin: the same path on another host is refused', () => {
+    const path = '/v1/sandboxes/abc123/terminal?ticket=t1';
+    expect(isTerminalPage(`https://evil.example${path}`)).toBe(false);
+    expect(isTerminalPage(`https://api.hanzo.ai.evil.example${path}`)).toBe(false);
+    expect(isTerminalPage(`https://api.hanzo.ai@evil.example${path}`)).toBe(false);
+    expect(isTerminalPage(`http://api.hanzo.ai${path}`)).toBe(false);
+    expect(isTerminalPage(`https://api.hanzo.ai${path}`)).toBe(true);
+    expect(isTerminalPage(`https://other.cloud${path}`, 'https://other.cloud')).toBe(true);
+  });
+
+  it('is false for what is not an address', () => {
+    expect(isTerminalPage('not a url')).toBe(false);
+    expect(isTerminalPage('/v1/sandboxes/abc/terminal')).toBe(false);
+  });
+});
+
+describe('what an inlined frame may do', () => {
+  it('never shares our origin: a blob inherits it, and the page was fetched from the network', () => {
+    expect(sandboxFor(true)).not.toContain('allow-same-origin');
+    expect(sandboxFor(true).split(' ')).toEqual(['allow-scripts']);
+  });
+
+  it('keeps its own origin for a frame served from its own address', () => {
+    expect(sandboxFor(false).split(' ')).toEqual(expect.arrayContaining(['allow-scripts', 'allow-same-origin']));
   });
 });
 
@@ -34,38 +55,27 @@ describe('the socket a blob document must dial', () => {
 
 describe('inlining a terminal page', () => {
   it('points the socket at the minted address', () => {
-    const { script, made } = blobs();
-    const out = inlineHtml(PAGE, URL_, false, script);
-    expect(made.join('\n')).toContain('var socket = "wss://api.hanzo.ai/v1/sandboxes/abc123/terminal/ws?ticket=t1&arg=shell-1";');
-    expect(made.join('\n')).not.toContain('location.host');
-    expect(out).not.toContain('<script>');
+    const out = inlineHtml(PAGE, URL_, false);
+    expect(out).toContain('var socket = "wss://api.hanzo.ai/v1/sandboxes/abc123/terminal/ws?ticket=t1&arg=shell-1";');
+    expect(out).not.toContain('location.host');
   });
 
-  it('turns every inline script into a script by address, so a webview\'s CSP nonce cannot block it', () => {
-    const { script, made } = blobs();
-    const out = inlineHtml(PAGE, URL_, false, script);
-    expect(made).toHaveLength(2);
-    expect(made[0]).toBe('var term = new Terminal();');
-    expect(out).toContain('<script src="blob:s1"></script>');
-    expect(out).toContain('<script src="blob:s2"></script>');
+  it('keeps every script inline: an opaque origin cannot load a blob: script', () => {
+    const out = inlineHtml(PAGE, URL_, true);
+    expect(out).not.toMatch(/<script[^>]*\ssrc=/);
+    expect(out).toContain('var term = new Terminal();');
   });
 
   it('adds the key bridge before </body> only when asked', () => {
-    const on = blobs();
-    const withBridge = inlineHtml(PAGE, URL_, true, on.script);
-    expect(on.made).toContain(BRIDGE);
-    expect(withBridge).toMatch(/<script src="blob:s3"><\/script><\/body>/);
-    const off = blobs();
-    inlineHtml(PAGE, URL_, false, off.script);
-    expect(off.made).not.toContain(BRIDGE);
+    expect(inlineHtml(PAGE, URL_, true)).toContain(`<script>${BRIDGE}</script></body>`);
+    expect(inlineHtml(PAGE, URL_, false)).not.toContain(BRIDGE);
   });
 
   it('appends the bridge when the page has no </body>', () => {
-    const { script } = blobs();
-    expect(inlineHtml(PAGE.replace('</body>', ''), URL_, true, script)).toMatch(/<script src="blob:s3"><\/script>$/);
+    expect(inlineHtml(PAGE.replace('</body>', ''), URL_, true).endsWith(`<script>${BRIDGE}</script>`)).toBe(true);
   });
 
   it('throws for a page whose socket it cannot find, rather than frame a terminal that dials nowhere', () => {
-    expect(() => inlineHtml('<html><script>var x = 1;</script></html>', URL_, false, blobs().script)).toThrow(/no socket/);
+    expect(() => inlineHtml('<html><script>var x = 1;</script></html>', URL_, false)).toThrow(/no socket/);
   });
 });

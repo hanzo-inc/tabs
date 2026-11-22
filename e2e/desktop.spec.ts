@@ -106,9 +106,9 @@ test.describe('a webview host', () => {
     expect(await focused(0)).toBe('false');
   });
 
-  test('a terminal page can ask for a split or a close, and only for its own pane', async ({ page }) => {
+  test('a terminal page can ask for a split or a close, with shortcuts on, and only for its own pane', async ({ page }) => {
     const { made } = await cloud(page);
-    await page.goto('/e2e/');
+    await page.goto('/e2e/?shortcuts=1');
     await open(page, 2);
     const second = page.frames().find((f) => f.url().includes('/m_2/terminal'))!;
     await second.evaluate(() => parent.postMessage({ source: 'hanzo-term', split: 'row' }, '*'));
@@ -119,6 +119,75 @@ test.describe('a webview host', () => {
     // The page itself is not a frame of the workspace: its word is no command.
     await page.evaluate(() => postMessage({ source: 'hanzo-term', close: true }, '*'));
     await expect(panes(page)).toHaveCount(2);
+  });
+
+  test('without shortcuts a terminal page\'s split and close, and the host\'s, do nothing', async ({ page }) => {
+    const { made } = await cloud(page);
+    await page.goto('/e2e/');
+    await open(page, 2);
+    const second = page.frames().find((f) => f.url().includes('/m_2/terminal'))!;
+    await second.evaluate(() => parent.postMessage({ source: 'hanzo-term', split: 'row' }, '*'));
+    await second.evaluate(() => parent.postMessage({ source: 'hanzo-term', close: true }, '*'));
+    await page.evaluate(() => {
+      window.dispatchEvent(new CustomEvent('hanzo:tabs-action', { detail: { kind: 'split', dir: 'row' } }));
+      window.dispatchEvent(new CustomEvent('hanzo:tabs-action', { detail: { kind: 'close' } }));
+    });
+    await page.waitForTimeout(500);
+    await expect(panes(page)).toHaveCount(2);
+    expect(made).toHaveLength(2);
+  });
+
+  test('inlineFrames: the page is fetched, framed as a blob with no same-origin, pointed at its ticket, and released', async ({ page }) => {
+    await cloud(page, [], { inline: true });
+    await page.goto('/e2e/?inline=1');
+    await page.getByRole('button', { name: 'New cloud computer' }).click();
+    const frame = panes(page).first();
+    await expect(frame).toHaveAttribute('src', /^blob:/);
+    const sandbox = await frame.getAttribute('sandbox');
+    expect(sandbox).not.toContain('allow-same-origin');
+    await expect(page.frameLocator('iframe[data-pane]').first().getByText('TERMINAL m_1')).toBeVisible();
+    await expect(page.getByText('The terminal did not come up.')).toHaveCount(0);
+    const inner = page.frames().find((f) => f.url().startsWith('blob:'))!;
+    expect(await inner.evaluate(() => (window as unknown as { socket: string }).socket)).toBe(
+      'wss://api.hanzo.ai/v1/sandbox/m_1/terminal/ws?ticket=tk&arg=shell-1',
+    );
+    // Its own origin is opaque: the host's storage is out of its reach.
+    expect(await inner.evaluate(() => { try { return localStorage.length >= 0 ? 'reached' : ''; } catch { return 'refused'; } })).toBe('refused');
+
+    // A second pane, then close it: its blob is released, the first one's is not.
+    await page.getByRole('button', { name: 'New cloud computer' }).click();
+    await expect(panes(page)).toHaveCount(2);
+    await expect(panes(page).nth(1)).toHaveAttribute('src', /^blob:/);
+    const kept = (await panes(page).nth(0).getAttribute('src'))!;
+    const gone = (await panes(page).nth(1).getAttribute('src'))!;
+    const alive = (u: string) => page.evaluate((x) => fetch(x).then(() => 'alive', () => 'revoked'), u);
+    expect(await alive(gone)).toBe('alive');
+    await page.locator('[data-slot="pane-close"]').nth(1).click();
+    await expect(panes(page)).toHaveCount(1);
+    await expect.poll(() => alive(gone)).toBe('revoked');
+    expect(await alive(kept)).toBe('alive');
+  });
+
+  test('dragging a divider on a scrolled row does not drag the view back to the focused pane', async ({ page }) => {
+    await cloud(page);
+    await page.goto('/e2e/?minPane=420');
+    await open(page, 4);
+    await page.locator('[data-slot="pane-name"]').first().click();
+    await page.evaluate(() => {
+      const el = [...document.querySelectorAll<HTMLElement>('*')].find((e) => getComputedStyle(e).overflowX === 'auto' && e.scrollWidth > e.clientWidth)!;
+      el.scrollTo({ left: el.scrollWidth });
+    });
+    const left = () =>
+      page.evaluate(() => [...document.querySelectorAll<HTMLElement>('*')].find((e) => getComputedStyle(e).overflowX === 'auto' && e.scrollWidth > e.clientWidth)!.scrollLeft);
+    const before = await left();
+    expect(before).toBeGreaterThan(100);
+    const seam = (await page.getByRole('separator').last().boundingBox())!;
+    await page.mouse.move(seam.x + seam.width / 2, seam.y + seam.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(seam.x - 60, seam.y + seam.height / 2, { steps: 6 });
+    await page.waitForTimeout(400);
+    expect(Math.abs((await left()) - before)).toBeLessThan(5);
+    await page.mouse.up();
   });
 
   test('the open panes are announced for the host\'s own tab strip', async ({ page }) => {

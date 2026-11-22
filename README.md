@@ -138,7 +138,14 @@ unchanged.
   page's `frame-ancestors` (`tauri://localhost`): the page is fetched, its socket
   pointed at the minted address, and framed as a blob (`lib/inline.ts`).
 - **A terminal page** may post `{ source: 'hanzo-term', split: 'row' | 'col' }` or
-  `{ source: 'hanzo-term', close: true }` to split or close its own pane.
+  `{ source: 'hanzo-term', close: true }` to split or close its own pane, and the
+  host may ask for `split` and `close` on `hanzo:tabs-action`: both only with
+  `shortcuts` on, and ignored otherwise.
+- **An inlined frame runs in an opaque origin** (`sandbox="allow-scripts"`, no
+  `allow-same-origin`): a blob inherits the origin that made it, and the page was
+  fetched from the network, so it must not get the host's storage or sign-in
+  token. Only the cloud's own terminal address (`API`, path
+  `/v1/sandbox(es)/:id/terminal`) is ever fetched.
 - **The host's tab strip** hears `hanzo:tabs-state` with `{ bind, items, focus }`
   (`items`: `{ id, title, status, active }` per open pane, in order); the same is
   kept at `window.__hanzoTabsState` for a host that mounts later. It asks back on
