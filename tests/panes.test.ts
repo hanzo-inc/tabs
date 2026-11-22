@@ -1,4 +1,5 @@
 import {
+  type Binding,
   DEADLINE,
   DEFAULT_SHELL,
   DOT,
@@ -10,6 +11,7 @@ import {
   revive,
   safeName,
   shellUrl,
+  tabItems,
   web,
 } from '@/lib/panes';
 import { append, pane, paneIds } from '@/lib/tiles';
@@ -246,4 +248,41 @@ describe('a browser pane', () => {
     expect(revive(pane('p'), { p: page }, new Set()).bind.p).toEqual(page);
   });
 
+});
+
+/** What a host's tab strip hears (`hanzo:tabs-state`): one item per open pane, in order. */
+describe('the open panes as a host lists them', () => {
+  const bind: Record<string, Binding> = {
+    a: { kind: 'shell', shell: { machine: 'cloud-1', name: 'shell-1' } },
+    b: { kind: 'screen', machine: 'desk-1' },
+    c: { kind: 'page', url: 'https://news.ycombinator.com/' },
+    d: { kind: 'gone', shell: { machine: 'old', name: 'shell-1' } },
+    e: { kind: 'starting', want: 'shell' },
+    f: { kind: 'failed', why: 'no' },
+  };
+  const status = (m: string) => ({ 'cloud-1': 'running', 'desk-1': 'pending' })[m];
+
+  it('names each pane as the pane names itself, in the order given, marking the focused one', () => {
+    const items = tabItems(['b', 'a', 'c'], bind, 'a', status);
+    expect(items.map((i) => i.id)).toEqual(['b', 'a', 'c']);
+    expect(items.map((i) => i.title)).toEqual([label(bind.b!), label(bind.a!), label(bind.c!)]);
+    expect(items.map((i) => i.active)).toEqual([false, true, false]);
+  });
+
+  it('reads status from the machine list, so a dot can follow it', () => {
+    const items = tabItems(['a', 'b', 'c'], bind, null, status);
+    expect(items.map((i) => i.status)).toEqual(['running', 'pending', 'online']);
+  });
+
+  it('calls a pane with no machine behind it offline, and one starting pending', () => {
+    const items = tabItems(['d', 'e', 'f'], bind, null, status);
+    expect(items.map((i) => i.status)).toEqual(['offline', 'pending', 'offline']);
+    expect(tabItems(['a'], bind, null, () => undefined)[0]!.status).toBe('offline');
+  });
+
+  it('skips an id with no binding, and has no active tab with no focus', () => {
+    const items = tabItems(['zz', 'a'], bind, null, status);
+    expect(items.map((i) => i.id)).toEqual(['a']);
+    expect(items.some((i) => i.active)).toBe(false);
+  });
 });

@@ -1,8 +1,10 @@
 import {
   MAX_RATIO,
   MIN_RATIO,
+  along,
   append,
   balance,
+  canvasWidth,
   closePane,
   hasPane,
   geometry,
@@ -12,6 +14,7 @@ import {
   paneIds,
   ratioAt,
   retain,
+  scrollFor,
   setRatio,
   splitPane,
   stableOrder,
@@ -354,5 +357,59 @@ describe('a phone pages instead of tiling side by side', () => {
     expect(stackFor(254)).toBe(1);  // landscape: one, not three slivers
     expect(stackFor(900)).toBe(3);  // a tablet
     expect(stackFor(0)).toBe(1);    // never zero
+  });
+});
+
+/**
+ * A row of terminals scrolls sideways rather than squeezing: the canvas the
+ * panes sit on grows until the narrowest keeps MIN_PANE px, and a drag or a
+ * focus is read against that canvas, not the box.
+ */
+describe('a row of panes keeps a readable width', () => {
+  const row = (n: number) => {
+    let t = pane('p0');
+    for (let i = 1; i < n; i++) t = append(t, `p${i}`);
+    return geometry(t).rects;
+  };
+
+  const MIN_PANE = 420;
+
+  it('leaves the canvas at the box while every pane fits', () => {
+    expect(canvasWidth(row(2), 1000, MIN_PANE)).toBe(1000); // 500 each
+    expect(canvasWidth(row(1), 300, MIN_PANE)).toBe(300);
+  });
+
+  it('squeezes, as it always did, when no minimum is asked for', () => {
+    expect(canvasWidth(row(5), 1000)).toBe(1000);
+    expect(canvasWidth(row(5), 1000, 0)).toBe(1000);
+  });
+
+  it('grows it so the narrowest pane has MIN_PANE px', () => {
+    const w = canvasWidth(row(5), 1000, MIN_PANE); // 200 each in the box
+    expect(w).toBe(5 * MIN_PANE);
+    expect(w).toBeGreaterThan(1000);
+  });
+
+  it('follows the narrowest pane when a divider has been dragged', () => {
+    const rects = geometry(setRatio(append(pane('a'), 'b'), [], 0.2)).rects; // 20% / 80%
+    expect(canvasWidth(rects, 1000, MIN_PANE)).toBe(Math.ceil((MIN_PANE * 100) / 20));
+  });
+
+  it('has no canvas to size with no box or no panes', () => {
+    expect(canvasWidth(row(5), 0, MIN_PANE)).toBe(0);
+    expect(canvasWidth([], 800, MIN_PANE)).toBe(800);
+  });
+
+  it('scrolls a pane into view from either side, and not when it already shows', () => {
+    const canvas = 2100; // five panes of 420
+    const third = { left: 40, width: 20 }; // 840 .. 1260
+    expect(scrollFor(third, canvas, 0, 1000)).toBe(1260 - 1000); // off to the right
+    expect(scrollFor(third, canvas, 1100, 1000)).toBe(840); // off to the left
+    expect(scrollFor(third, canvas, 500, 1000)).toBeNull(); // 500..1500 shows it whole
+  });
+
+  it('measures a drag from where the canvas starts, so a scrolled box does not jump', () => {
+    expect(along(300, 100, 0, 1000)).toBe(20); // unscrolled: 200px of 1000
+    expect(along(300, 100, 800, 2000)).toBe(50); // scrolled 800: 1000px of 2000
   });
 });

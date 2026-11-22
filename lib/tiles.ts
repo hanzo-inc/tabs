@@ -249,6 +249,38 @@ export function geometry(t: Tile): Geometry {
   return { rects, dividers };
 }
 
+/**
+ * The width, in px, of the canvas the panes are laid on: the box itself, or
+ * wider when the narrowest pane would fall below `min`, so three or five
+ * terminals side by side scroll sideways rather than shrink to slivers. With no
+ * `min` the panes share the box however narrow. Only for the tiled layout; the
+ * phone's pages are already one pane wide.
+ */
+export function canvasWidth(rects: readonly Rect[], box: number, min?: number): number {
+  if (!min || box <= 0 || rects.length < 2) return box;
+  const narrow = Math.min(...rects.map((r) => r.width));
+  return narrow > 0 ? Math.max(box, Math.ceil((min * 100) / narrow)) : box;
+}
+
+/** Where a scrolled canvas must go to show `rect` whole, or null when it already shows. */
+export function scrollFor(
+  rect: Pick<Rect, 'left' | 'width'>,
+  canvas: number,
+  scrollLeft: number,
+  view: number,
+): number | null {
+  const left = (rect.left / 100) * canvas;
+  const right = ((rect.left + rect.width) / 100) * canvas;
+  if (left < scrollLeft) return left;
+  if (right > scrollLeft + view) return right - view;
+  return null;
+}
+
+/** A pointer's place along the canvas as a percent of it: the box scrolls, so
+ *  the pointer is measured from where the canvas starts, not where the box does. */
+export const along = (clientX: number, boxLeft: number, scrollLeft: number, canvas: number): number =>
+  (100 * (clientX - boxLeft + scrollLeft)) / canvas;
+
 /** A DOM order that only ever grows.
  *
  * The panes render as a flat list whose ORDER decides React's reconciliation, so

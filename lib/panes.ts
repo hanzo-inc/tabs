@@ -337,3 +337,31 @@ export function within(source: unknown, frame: unknown, self: unknown): boolean 
 
 
 
+
+/** One open pane as a host's tab strip reads it (the `hanzo:tabs-state` event). */
+export interface TabItem {
+  id: string;
+  title: string;
+  /** A `DOT` key: `offline` for a pane with no machine behind it, `pending` while one starts. */
+  status: string;
+  active: boolean;
+}
+
+/** The open panes, in the order they sit, for a host that draws its own tabs.
+ *  `statusOf` is what the machine list says about a machine, if it lists it. */
+export function tabItems(
+  order: readonly string[],
+  bind: Readonly<Record<string, Binding>>,
+  focus: string | null,
+  statusOf: (machine: string) => string | undefined,
+): TabItem[] {
+  return order
+    .filter((id) => bind[id])
+    .map((id) => {
+      const b = bind[id]!;
+      const m = machineOf(b);
+      const status =
+        b.kind === 'page' ? 'online' : b.kind === 'starting' ? 'pending' : b.kind === 'shell' || b.kind === 'screen' ? (m && statusOf(m)) || 'offline' : 'offline';
+      return { id, title: label(b), status, active: id === focus };
+    });
+}

@@ -98,13 +98,16 @@ import {
   type Divider,
   type Geometry,
   type Tile,
+  along,
   append,
+  canvasWidth,
   closePane,
   geometry,
   pageGeometry,
   pane,
   paneIds,
   ratioAt,
+  scrollFor,
   setRatio,
   splitPane,
   stableOrder,
@@ -125,8 +128,10 @@ import {
   orphaned,
   web,
   revive,
+  tabItems,
   within,
 } from '../lib/panes';
+import { shortcut } from '../lib/keys';
 import { UPGRADE, full, over } from '../lib/plan';
 import {
   type Come,
@@ -208,12 +213,22 @@ function load(): Saved | null {
 const SIZE_KEY = 'hanzo.tabs.size.v1';
 
 /** The host's menu asks the workspace for a pane by this event, and hears the
- *  open panes by the other (@hanzo/app Sidebar). */
+ *  open panes by the other (@hanzo/app Sidebar): its detail is `{ bind, items,
+ *  focus }` (`TabItem`), also kept at `window.__hanzoTabsState` for a host that
+ *  mounts after the workspace's last announcement. */
 const ACTION_EVENT = 'hanzo:tabs-action';
 const STATE_EVENT = 'hanzo:tabs-state';
 
-/** One thing the host's menu asks for. */
-type Action = { kind: 'shell' | 'desktop' | 'page' | 'cloud' | 'focus'; machine?: string; id?: string };
+/** One thing the host's menu asks for. `split` divides the focused pane in `dir`;
+ *  `close` closes pane `id`, or the focused one. A host that closes its window
+ *  when there is no pane to close passes `res` and reads `handled` after. */
+type Action = {
+  kind: 'shell' | 'desktop' | 'page' | 'cloud' | 'focus' | 'split' | 'close';
+  machine?: string;
+  id?: string;
+  dir?: Dir;
+  res?: { handled: boolean };
+};
 
 /** One question the workspace puts to the person. */
 type Ask = {
@@ -396,6 +411,8 @@ export function Workspace({
   account,
   agent,
   streams = null,
+  shortcuts = false,
+  minPane,
   start,
   end,
 }: {
@@ -438,6 +455,16 @@ export function Workspace({
    *  -1 no cap, null not told — which caps no stream, and makes every start of
    *  a cloud computer ask first ("Don't ask again" needs a plan to lean on). */
   streams?: number | null;
+  /** Claim ⌘D / ⌘⇧D (split right / down), ⌘W (close the focused pane) and
+   *  ⌘= ⌘- ⌘0 (type size) for the workspace, from this document. It also admits the split
+   *  and close that arrive as `hanzo:tabs-action` events; with it off those are
+   *  ignored. Off by default: in a browser tab these keys are the browser's. A
+   *  host with no browser around it (a desktop webview) turns it on. */
+  shortcuts?: boolean;
+  /** The narrowest a pane may be, in px, before the row scrolls sideways
+   *  instead of squeezing every pane narrower. Absent, panes share the width
+   *  however many there are. */
+  minPane?: number;
 }) {
   // A machine with no `base` serves no terminal, and there is nothing to open on
   // one of those — except a sandbox, whose URL is minted on bind rather than
@@ -541,9 +568,6 @@ export function Workspace({
     } catch {
       /* private mode or quota — a layout that cannot be saved still works today */
     }
-    // The host's menu lists the open panes from this. `storage` fires only in
-    // OTHER tabs, so the page that changed the layout says so itself.
-    window.dispatchEvent(new CustomEvent(STATE_EVENT, { detail: { bind } }));
   }, [tile, bind, ready]);
 
   const ids = useMemo(() => (tile ? paneIds(tile) : []), [tile]);
@@ -556,6 +580,15 @@ export function Workspace({
   }, [ids, focus]);
 
   const hostOf = useCallback((m: string) => hosts.find((h) => h.machine === m), [hosts]);
+
+  // The host's menu and tab strip list the open panes from this. `storage`
+  // fires only in OTHER tabs, so the page that changed the layout says so itself.
+  useEffect(() => {
+    if (!ready) return;
+    const detail = { bind, items: tabItems(order, bind, focus, (m) => hostOf(m)?.status), focus };
+    (window as unknown as { __hanzoTabsState?: unknown }).__hanzoTabsState = detail;
+    window.dispatchEvent(new CustomEvent(STATE_EVENT, { detail }));
+  }, [bind, order, focus, hostOf, ready]);
 
   /** Shell names already open on a machine, so a new one does not collide. */
   const takenOn = useCallback(
@@ -834,7 +867,9 @@ export function Workspace({
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [ready]);
+    // The box is not there while the workspace shows its empty state, and a
+    // box that appears later (the first machine, the first pane) is a new element.
+  }, [ready, live.length === 0 && !tile]);
 
   // The breakpoint is the ROOM, not the device: a phone in landscape and a narrow
   // desktop window have the same problem, and neither can hold two terminals.
@@ -848,6 +883,12 @@ export function Workspace({
     [paged, tile],
   );
   const placed = useMemo(() => new Map(geo.rects.map((r) => [r.id, r])), [geo]);
+
+  // With `minPane`, panes keep a readable width: when the narrowest would be
+  // squeezed below it, the canvas they sit on grows past the box and the box scrolls.
+  const canvas = paging ? box.w : canvasWidth(geo.rects, box.w, minPane);
+  const scrolls = canvas > box.w;
+  const scroller = useRef<HTMLElement | null>(null);
 
   const pages = paged?.pages ?? 1;
   const [page, setPage] = useState(0);
@@ -865,10 +906,11 @@ export function Workspace({
       const r = boxRef.current?.getBoundingClientRect();
       if (!r || r.width === 0 || r.height === 0) return;
       // In the paged projection the track is `pages * 100%` wide and shifted, so a
-      // horizontal drag is measured against ONE page, not the whole track.
+      // horizontal drag is measured against ONE page, not the whole track. On a
+      // scrolled canvas it is measured against the canvas, from where it starts.
       const at =
         drag.dir === 'row'
-          ? (100 * (e.clientX - r.left)) / r.width
+          ? along(e.clientX, r.left, scrolls ? (scroller.current?.scrollLeft ?? 0) : 0, scrolls ? canvas : r.width)
           : (100 * (e.clientY - r.top)) / r.height;
       // The ratio is a share of the split's OWN extent: read against the whole
       // box, a nested divider jumped away from the pointer on the first move.
@@ -881,7 +923,21 @@ export function Workspace({
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
     };
-  }, [drag]);
+  }, [drag, scrolls, canvas]);
+
+  // The focused pane is brought into view on a scrolled canvas when focus moves
+  // (or the canvas starts to scroll), never while a divider is dragged: every
+  // step of a drag re-lays the panes, and following the focus then fights the pointer.
+  const lay = useRef({ placed, canvas, drag });
+  lay.current = { placed, canvas, drag };
+  useEffect(() => {
+    const el = scroller.current;
+    const { placed: now, canvas: width, drag: dragging } = lay.current;
+    const r = focus ? now.get(focus) : undefined;
+    if (!scrolls || !el || !r || dragging) return;
+    const to = scrollFor(r, width, el.scrollLeft, el.clientWidth);
+    if (to !== null) el.scrollTo({ left: to, behavior: 'smooth' });
+  }, [focus, scrolls]);
 
   // Click-to-focus from INSIDE a frame: the click never reaches this document,
   // but the window losing focus does, and activeElement is then the iframe.
@@ -1218,9 +1274,46 @@ export function Workspace({
         case 'focus':
           if (a.id && bind[a.id]) setFocus(a.id);
           return;
+        case 'split': {
+          if (!shortcuts) return;
+          const target = a.id && bind[a.id] ? a.id : (focus ?? rendered[0] ?? null);
+          if (target) split(a.dir === 'col' ? 'col' : 'row', target);
+          else act.current({ kind: 'shell' });
+          return;
+        }
+        case 'close': {
+          if (!shortcuts) return;
+          const target = a.id && bind[a.id] ? a.id : (focus ?? rendered[0] ?? null);
+          if (!target) return;
+          close(target);
+          if (a.res) a.res.handled = true;
+          return;
+        }
       }
     };
   });
+
+  // The keys `shortcut` names, when the host owns the window. Captured, so a
+  // focused field or an iframe's parent sees them first; claimed only when
+  // there is something to do, so ⌘W with no pane is left to the host (its
+  // window).
+  useEffect(() => {
+    if (!shortcuts) return;
+    const onKey = (e: KeyboardEvent) => {
+      const k = shortcut(e);
+      if (!k) return;
+      if (k === 'split-row' || k === 'split-col') act.current({ kind: 'split', dir: k === 'split-row' ? 'row' : 'col' });
+      else if (k === 'close') {
+        const res = { handled: false };
+        act.current({ kind: 'close', res });
+        if (!res.handled) return;
+      } else setSize((n) => (k === 'reset' ? SIZE.default : clampSize(n + (k === 'bigger' ? SIZE.step : -SIZE.step))));
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [shortcuts]);
 
   // The visible undo for "Don't ask again", beside the start buttons wherever
   // they are: there while anything is remembered for this account, gone once
@@ -1289,14 +1382,16 @@ export function Workspace({
       ref={(el) => {
         rootRef.current = el instanceof HTMLElement ? el : null;
       }}
+      data-slot="tabs-root"
       height="100%"
       width="100%"
       gap="$2.5"
       p="$3"
     >
       {/* One row. Actions, not a status report. */}
-      <XStack shrink={0} items="center" gap="$2">
+      <XStack data-slot="tabs-strip" shrink={0} items="center" gap="$2">
         {start}
+        <XStack data-slot="tabs-actions" items="center" gap="$2">
         <Act
           disabled={busy}
           run={() => openShell(null)}
@@ -1337,6 +1432,7 @@ export function Workspace({
             label="New cloud computer"
           />
         ) : null}
+        </XStack>
         <XStack ml="auto" shrink={0} items="center" gap="$1.5">
           {reset}
           {/* Type size. Two buttons and the number they move — a stepper IS the
@@ -1344,6 +1440,7 @@ export function Workspace({
               its own state, which a slider or a menu would each need a second
               affordance to do. */}
           <XStack
+            data-slot="tabs-size"
             mr="$1"
             items="center"
             rounded="$2"
@@ -1384,6 +1481,8 @@ export function Workspace({
             </Button>
           </XStack>
           <Button
+            data-slot="pane-split"
+            data-dir="right"
             variant="outline"
             size="sm"
             onPress={() => focus && split('row', focus)}
@@ -1395,6 +1494,8 @@ export function Workspace({
             {paging ? null : <SizableText size="$1">Right</SizableText>}
           </Button>
           <Button
+            data-slot="pane-split"
+            data-dir="down"
             variant="outline"
             size="sm"
             onPress={() => focus && split('col', focus)}
@@ -1449,6 +1550,7 @@ export function Workspace({
         ref={(el) => {
           boxRef.current = el instanceof HTMLElement ? el : null;
         }}
+        data-slot="tabs-scroll-container"
         position="relative"
         width="100%"
         flex={1}
@@ -1459,9 +1561,19 @@ export function Workspace({
         borderColor="$borderColor"
         bg={FRAME[scheme].ground}
       >
+        {/* The scroller is inside the box so that what covers the box (the drag
+            sheet, the picker) stays put while the panes scroll under it. */}
         <YStack
+          ref={(el) => {
+            scroller.current = el instanceof HTMLElement ? el : null;
+          }}
           position="absolute"
           inset={0}
+          style={{ overflowX: scrolls ? 'auto' : 'hidden', overflowY: 'hidden' }}
+        >
+        <YStack
+          position={scrolls ? 'relative' : 'absolute'}
+          inset={scrolls ? undefined : 0}
           style={
             paging
               ? {
@@ -1469,7 +1581,9 @@ export function Workspace({
                   transform: `translate3d(-${(page * 100) / pages}%,0,0)`,
                   transition: drag ? 'none' : 'transform 220ms cubic-bezier(0.22,1,0.36,1)',
                 }
-              : undefined
+              : scrolls
+                ? { width: canvas, height: '100%' }
+                : undefined
           }
         >
           {rendered.map((id) => {
@@ -1531,6 +1645,7 @@ export function Workspace({
             return (
               <YStack
                 key={id}
+                data-slot="terminal-pane"
                 onPointerDown={() => setFocus(id)}
                 position="absolute"
                 overflow="hidden"
@@ -1546,6 +1661,8 @@ export function Workspace({
                     allows and no shorter — every pixel here is a row of
                     terminal, times the number of panes. */}
                 <XStack
+                  data-slot="pane-name"
+                  data-focused={on ? 'true' : 'false'}
                   height={BAR}
                   shrink={0}
                   items="center"
@@ -1600,10 +1717,10 @@ export function Workspace({
                   ) : null}
                   {paging ? null : (
                     <XStack ml="auto" items="center" gap="$1">
-                      <Chip run={() => split('row', id)} title="Split right" disabled={busy}>
+                      <Chip run={() => split('row', id)} title="Split right" disabled={busy} data-slot="pane-split" data-dir="right">
                         <Columns2 size={14} />
                       </Chip>
-                      <Chip run={() => split('col', id)} title="Split down" disabled={busy}>
+                      <Chip run={() => split('col', id)} title="Split down" disabled={busy} data-slot="pane-split" data-dir="down">
                         <Rows2 size={14} />
                       </Chip>
                     </XStack>
@@ -1615,6 +1732,7 @@ export function Workspace({
                   <Chip
                     run={() => close(id)}
                     title="Close pane"
+                    data-slot="pane-close"
                     ml={paging ? 'auto' : 0}
                   >
                     <X size={paging ? 16 : 14} />
@@ -1887,6 +2005,7 @@ export function Workspace({
               </YStack>
             );
           })}
+        </YStack>
         </YStack>
 
         {drag ? (

@@ -10,7 +10,7 @@
  * answers, an account the test can change mid-session, and a menu of its own
  * outside the workspace that asks by `hanzo:tabs-action`, as @hanzo/app's does.
  *
- * `?confirm=host` passes the confirm. Each ask is pushed to
+ * `?shortcuts=1` and `?minPane=420` pass those props. `?confirm=host` passes the confirm. Each ask is pushed to
  * `window.__tabs.asks`, and the test answers it with `window.__tabs.answer(v)`:
  * a value resolves it, `'throw'` rejects it.
  */
@@ -27,9 +27,11 @@ export default function Host() {
   const [token, setToken] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
   const [account, setAccount] = useState('e2e');
+  const [query, setQuery] = useState(() => new URLSearchParams());
   useEffect(() => {
     setToken(window.localStorage.getItem('hanzo_iam_access_token'));
     setConfirm(new URLSearchParams(window.location.search).get('confirm') === 'host');
+    setQuery(new URLSearchParams(window.location.search));
   }, []);
   const { hosts, streams, read, mint, launch, stop } = useFleet(token);
 
@@ -63,6 +65,8 @@ export default function Host() {
             onLaunch={launch}
             onStop={stop}
             confirmLease={confirmLease}
+            shortcuts={query.get('shortcuts') === '1'}
+            minPane={Number(query.get('minPane')) || undefined}
             end={
               <Button variant="ghost" size="sm" onPress={() => setAccount((a) => (a === 'e2e' ? 'other' : 'e2e'))}>
                 Switch account
