@@ -1410,7 +1410,7 @@ export function Workspace({
       p="$3"
     >
       {/* One row. Actions, not a status report. */}
-      <XStack shrink={0} items="center" gap="$2">
+      <XStack data-slot="tabs-strip" shrink={0} items="center" gap="$2">
         {start}
         <Act
           disabled={busy}
@@ -1564,6 +1564,7 @@ export function Workspace({
         ref={(el) => {
           boxRef.current = el instanceof HTMLElement ? el : null;
         }}
+        data-slot="tabs-scroll-container"
         position="relative"
         width="100%"
         flex={1}
@@ -1659,6 +1660,7 @@ export function Workspace({
             return (
               <YStack
                 key={id}
+                data-slot="terminal-pane"
                 onPointerDown={() => setFocus(id)}
                 position="absolute"
                 overflow="hidden"

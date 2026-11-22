@@ -85,6 +85,15 @@ test.describe('a webview host', () => {
     await expect(page.getByTitle('Terminal text size')).toHaveText('12');
   });
 
+  test('the toolbar, the scrolling box and every pane wear the slots a host styles by', async ({ page }) => {
+    await cloud(page);
+    await page.goto('/e2e/');
+    await open(page, 2);
+    await expect(page.locator('[data-slot="tabs-strip"]')).toHaveCount(1);
+    await expect(page.locator('[data-slot="tabs-scroll-container"]')).toHaveCount(1);
+    await expect(page.locator('[data-slot="terminal-pane"]')).toHaveCount(2);
+  });
+
   test('a terminal page can ask for a split or a close, and only for its own pane', async ({ page }) => {
     const { made } = await cloud(page);
     await page.goto('/e2e/');
