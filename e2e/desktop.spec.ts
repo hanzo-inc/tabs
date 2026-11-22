@@ -85,13 +85,25 @@ test.describe('a webview host', () => {
     await expect(page.getByTitle('Terminal text size')).toHaveText('12');
   });
 
-  test('the toolbar, the scrolling box and every pane wear the slots a host styles by', async ({ page }) => {
+  test('every part a host styles wears its slot, and the name bar says which pane has focus', async ({ page }) => {
     await cloud(page);
     await page.goto('/e2e/');
     await open(page, 2);
-    await expect(page.locator('[data-slot="tabs-strip"]')).toHaveCount(1);
-    await expect(page.locator('[data-slot="tabs-scroll-container"]')).toHaveCount(1);
-    await expect(page.locator('[data-slot="terminal-pane"]')).toHaveCount(2);
+    const slot = (n: string) => page.locator(`[data-slot="${n}"]`);
+    for (const [name, count] of [
+      ['tabs-root', 1], ['tabs-strip', 1], ['tabs-actions', 1], ['tabs-size', 1], ['tabs-scroll-container', 1],
+      ['terminal-pane', 2], ['pane-name', 2], ['pane-close', 2],
+      ['pane-split', 6], // the toolbar's two and each pane's two
+    ] as const) await expect(slot(name)).toHaveCount(count);
+    for (const dir of ['right', 'down']) await expect(page.locator(`[data-slot="pane-split"][data-dir="${dir}"]`)).toHaveCount(3);
+
+    const focused = (n: number) => slot('pane-name').nth(n).getAttribute('data-focused');
+    await slot('terminal-pane').nth(0).locator('[data-slot="pane-name"]').click();
+    await expect.poll(() => focused(0)).toBe('true');
+    expect(await focused(1)).toBe('false');
+    await slot('terminal-pane').nth(1).locator('[data-slot="pane-name"]').click();
+    await expect.poll(() => focused(1)).toBe('true');
+    expect(await focused(0)).toBe('false');
   });
 
   test('a terminal page can ask for a split or a close, and only for its own pane', async ({ page }) => {

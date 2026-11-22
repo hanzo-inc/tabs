@@ -1404,6 +1404,7 @@ export function Workspace({
       ref={(el) => {
         rootRef.current = el instanceof HTMLElement ? el : null;
       }}
+      data-slot="tabs-root"
       height="100%"
       width="100%"
       gap="$2.5"
@@ -1412,6 +1413,7 @@ export function Workspace({
       {/* One row. Actions, not a status report. */}
       <XStack data-slot="tabs-strip" shrink={0} items="center" gap="$2">
         {start}
+        <XStack data-slot="tabs-actions" items="center" gap="$2">
         <Act
           disabled={busy}
           run={() => openShell(null)}
@@ -1452,6 +1454,7 @@ export function Workspace({
             label="New cloud computer"
           />
         ) : null}
+        </XStack>
         <XStack ml="auto" shrink={0} items="center" gap="$1.5">
           {reset}
           {/* Type size. Two buttons and the number they move — a stepper IS the
@@ -1459,6 +1462,7 @@ export function Workspace({
               its own state, which a slider or a menu would each need a second
               affordance to do. */}
           <XStack
+            data-slot="tabs-size"
             mr="$1"
             items="center"
             rounded="$2"
@@ -1499,6 +1503,8 @@ export function Workspace({
             </Button>
           </XStack>
           <Button
+            data-slot="pane-split"
+            data-dir="right"
             variant="outline"
             size="sm"
             onPress={() => focus && split('row', focus)}
@@ -1510,6 +1516,8 @@ export function Workspace({
             {paging ? null : <SizableText size="$1">Right</SizableText>}
           </Button>
           <Button
+            data-slot="pane-split"
+            data-dir="down"
             variant="outline"
             size="sm"
             onPress={() => focus && split('col', focus)}
@@ -1676,6 +1684,8 @@ export function Workspace({
                     allows and no shorter — every pixel here is a row of
                     terminal, times the number of panes. */}
                 <XStack
+                  data-slot="pane-name"
+                  data-focused={on ? 'true' : 'false'}
                   height={BAR}
                   shrink={0}
                   items="center"
@@ -1730,10 +1740,10 @@ export function Workspace({
                   ) : null}
                   {paging ? null : (
                     <XStack ml="auto" items="center" gap="$1">
-                      <Chip run={() => split('row', id)} title="Split right" disabled={busy}>
+                      <Chip run={() => split('row', id)} title="Split right" disabled={busy} data-slot="pane-split" data-dir="right">
                         <Columns2 size={14} />
                       </Chip>
-                      <Chip run={() => split('col', id)} title="Split down" disabled={busy}>
+                      <Chip run={() => split('col', id)} title="Split down" disabled={busy} data-slot="pane-split" data-dir="down">
                         <Rows2 size={14} />
                       </Chip>
                     </XStack>
@@ -1745,6 +1755,7 @@ export function Workspace({
                   <Chip
                     run={() => close(id)}
                     title="Close pane"
+                    data-slot="pane-close"
                     ml={paging ? 'auto' : 0}
                   >
                     <X size={paging ? 16 : 14} />
