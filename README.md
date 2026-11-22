@@ -116,6 +116,36 @@ desktop app, hanzo.ai) passes these props:
   keeping it is the answer focused first. Without `onStop` the person is told it
   is still running.
 
+## Hosting the workspace: a window of its own
+
+A host with no browser around the workspace (the desktop app's webview) can ask
+for four more things. All are off or absent by default, so a browser tab is
+unchanged.
+
+```ts
+<Workspace
+  shortcuts          // claim ⌘D / ⌘⇧D (split right / down), ⌘W (close), ⌘= ⌘- ⌘0 (type size)
+  inlineFrames       // fetch each terminal page here and frame it as a blob: document
+  minPane={420}      // px: the row scrolls sideways rather than squeeze a pane narrower
+/>
+```
+
+- **`shortcuts`** is for hosts that own the window: in a browser those keys are
+  the browser's. Command only; Control stays the terminal's (Ctrl+D, Ctrl+W).
+  ⌘W with no pane to close is left to the host. With `inlineFrames` the keys also
+  work while a terminal has focus.
+- **`inlineFrames`** is for a webview whose own origin is not in the terminal
+  page's `frame-ancestors` (`tauri://localhost`): the page is fetched, its socket
+  pointed at the minted address, and framed as a blob (`lib/inline.ts`).
+- **A terminal page** may post `{ source: 'hanzo-term', split: 'row' | 'col' }` or
+  `{ source: 'hanzo-term', close: true }` to split or close its own pane.
+- **The host's tab strip** hears `hanzo:tabs-state` with `{ bind, items, focus }`
+  (`items`: `{ id, title, status, active }` per open pane, in order); the same is
+  kept at `window.__hanzoTabsState` for a host that mounts later. It asks back on
+  `hanzo:tabs-action` with `focus`, `close` (an `id`, or the focused pane; pass
+  `res: { handled: false }` to learn whether a pane was closed), `split` (`dir`),
+  `shell`, `desktop`, `page` and `cloud`.
+
 ## Develop
 
 ```bash

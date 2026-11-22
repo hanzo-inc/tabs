@@ -98,13 +98,16 @@ import {
   type Divider,
   type Geometry,
   type Tile,
+  along,
   append,
+  canvasWidth,
   closePane,
   geometry,
   pageGeometry,
   pane,
   paneIds,
   ratioAt,
+  scrollFor,
   setRatio,
   splitPane,
   stableOrder,
@@ -125,8 +128,12 @@ import {
   orphaned,
   web,
   revive,
+  tabItems,
+  termCommand,
   within,
 } from '../lib/panes';
+import { shortcut } from '../lib/keys';
+import { isTerminalPage, useInline } from '../lib/inline';
 import { UPGRADE, full, over } from '../lib/plan';
 import {
   type Come,
@@ -208,12 +215,22 @@ function load(): Saved | null {
 const SIZE_KEY = 'hanzo.tabs.size.v1';
 
 /** The host's menu asks the workspace for a pane by this event, and hears the
- *  open panes by the other (@hanzo/app Sidebar). */
+ *  open panes by the other (@hanzo/app Sidebar): its detail is `{ bind, items,
+ *  focus }` (`TabItem`), also kept at `window.__hanzoTabsState` for a host that
+ *  mounts after the workspace's last announcement. */
 const ACTION_EVENT = 'hanzo:tabs-action';
 const STATE_EVENT = 'hanzo:tabs-state';
 
-/** One thing the host's menu asks for. */
-type Action = { kind: 'shell' | 'desktop' | 'page' | 'cloud' | 'focus'; machine?: string; id?: string };
+/** One thing the host's menu asks for. `split` divides the focused pane in `dir`;
+ *  `close` closes pane `id`, or the focused one. A host that closes its window
+ *  when there is no pane to close passes `res` and reads `handled` after. */
+type Action = {
+  kind: 'shell' | 'desktop' | 'page' | 'cloud' | 'focus' | 'split' | 'close';
+  machine?: string;
+  id?: string;
+  dir?: Dir;
+  res?: { handled: boolean };
+};
 
 /** One question the workspace puts to the person. */
 type Ask = {
@@ -396,6 +413,9 @@ export function Workspace({
   account,
   agent,
   streams = null,
+  shortcuts = false,
+  inlineFrames = false,
+  minPane,
   start,
   end,
 }: {
@@ -438,6 +458,20 @@ export function Workspace({
    *  -1 no cap, null not told — which caps no stream, and makes every start of
    *  a cloud computer ask first ("Don't ask again" needs a plan to lean on). */
   streams?: number | null;
+  /** Claim ⌘D / ⌘⇧D (split right / down), ⌘W (close the focused pane) and
+   *  ⌘= ⌘- ⌘0 (type size) for the workspace, from this document and, with
+   *  `inlineFrames`, from inside the terminal frames. Off by default: in a browser tab these keys are
+   *  the browser's. A host with no browser around it (a desktop webview) turns
+   *  it on. */
+  shortcuts?: boolean;
+  /** Fetch each terminal page here and frame it as a `blob:` document, for a
+   *  host whose own origin the terminal's `frame-ancestors` does not list (a
+   *  desktop webview). See `lib/inline`. */
+  inlineFrames?: boolean;
+  /** The narrowest a pane may be, in px, before the row scrolls sideways
+   *  instead of squeezing every pane narrower. Absent, panes share the width
+   *  however many there are. */
+  minPane?: number;
 }) {
   // A machine with no `base` serves no terminal, and there is nothing to open on
   // one of those — except a sandbox, whose URL is minted on bind rather than
@@ -541,9 +575,6 @@ export function Workspace({
     } catch {
       /* private mode or quota — a layout that cannot be saved still works today */
     }
-    // The host's menu lists the open panes from this. `storage` fires only in
-    // OTHER tabs, so the page that changed the layout says so itself.
-    window.dispatchEvent(new CustomEvent(STATE_EVENT, { detail: { bind } }));
   }, [tile, bind, ready]);
 
   const ids = useMemo(() => (tile ? paneIds(tile) : []), [tile]);
@@ -556,6 +587,15 @@ export function Workspace({
   }, [ids, focus]);
 
   const hostOf = useCallback((m: string) => hosts.find((h) => h.machine === m), [hosts]);
+
+  // The host's menu and tab strip list the open panes from this. `storage`
+  // fires only in OTHER tabs, so the page that changed the layout says so itself.
+  useEffect(() => {
+    if (!ready) return;
+    const detail = { bind, items: tabItems(order, bind, focus, (m) => hostOf(m)?.status), focus };
+    (window as unknown as { __hanzoTabsState?: unknown }).__hanzoTabsState = detail;
+    window.dispatchEvent(new CustomEvent(STATE_EVENT, { detail }));
+  }, [bind, order, focus, hostOf, ready]);
 
   /** Shell names already open on a machine, so a new one does not collide. */
   const takenOn = useCallback(
@@ -849,6 +889,12 @@ export function Workspace({
   );
   const placed = useMemo(() => new Map(geo.rects.map((r) => [r.id, r])), [geo]);
 
+  // With `minPane`, panes keep a readable width: when the narrowest would be
+  // squeezed below it, the canvas they sit on grows past the box and the box scrolls.
+  const canvas = paging ? box.w : canvasWidth(geo.rects, box.w, minPane);
+  const scrolls = canvas > box.w;
+  const scroller = useRef<HTMLElement | null>(null);
+
   const pages = paged?.pages ?? 1;
   const [page, setPage] = useState(0);
   useEffect(() => setPage((p) => Math.min(p, pages - 1)), [pages]);
@@ -865,10 +911,11 @@ export function Workspace({
       const r = boxRef.current?.getBoundingClientRect();
       if (!r || r.width === 0 || r.height === 0) return;
       // In the paged projection the track is `pages * 100%` wide and shifted, so a
-      // horizontal drag is measured against ONE page, not the whole track.
+      // horizontal drag is measured against ONE page, not the whole track. On a
+      // scrolled canvas it is measured against the canvas, from where it starts.
       const at =
         drag.dir === 'row'
-          ? (100 * (e.clientX - r.left)) / r.width
+          ? along(e.clientX, r.left, scrolls ? (scroller.current?.scrollLeft ?? 0) : 0, scrolls ? canvas : r.width)
           : (100 * (e.clientY - r.top)) / r.height;
       // The ratio is a share of the split's OWN extent: read against the whole
       // box, a nested divider jumped away from the pointer on the first move.
@@ -881,7 +928,16 @@ export function Workspace({
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
     };
-  }, [drag]);
+  }, [drag, scrolls, canvas]);
+
+  // The focused pane is brought into view on a scrolled canvas.
+  useEffect(() => {
+    const el = scroller.current;
+    const r = focus ? placed.get(focus) : undefined;
+    if (!scrolls || !el || !r) return;
+    const to = scrollFor(r, canvas, el.scrollLeft, el.clientWidth);
+    if (to !== null) el.scrollTo({ left: to, behavior: 'smooth' });
+  }, [focus, scrolls, placed, canvas]);
 
   // Click-to-focus from INSIDE a frame: the click never reaches this document,
   // but the window losing focus does, and activeElement is then the iframe.
@@ -931,6 +987,21 @@ export function Workspace({
 
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
+      // A terminal page asking for a split or a close (`termCommand`): said
+      // for ITS pane, so that pane is the target, and a framed web page has no
+      // such say.
+      const cmd = termCommand(e.data);
+      if (cmd) {
+        for (const [id, el] of Object.entries(frames.current)) {
+          if (el && within(e.source, el.contentWindow, window)) {
+            if (bindNow.current[id]?.kind === 'page') return;
+            setFocus(id);
+            act.current('close' in cmd ? { kind: 'close', id } : { kind: 'split', dir: cmd.split, id });
+            return;
+          }
+        }
+        return;
+      }
       if (!isReady(e.data)) return;
       // The sender identifies the pane: a message is trusted only when it comes
       // from inside a frame this workspace actually rendered — its window or
@@ -1135,6 +1206,15 @@ export function Workspace({
     [],
   );
 
+  // With `inlineFrames`, a terminal's address is fetched here and framed as a blob
+  // (lib/inline); the frame waits for it, and a fetch that fails is the same silence
+  // as any other failure, which the come-up machine ends in its rescue.
+  const docs = useInline(
+    rendered.map((id) => (capped.has(id) || bind[id]?.kind === 'page' ? null : address(come[id]))),
+    inlineFrames,
+    shortcuts,
+  );
+
   /** Reconnect a pane: the come-up begins again, with a fresh address. */
   const reconnect = (id: string) => {
     const b = bindNow.current[id];
@@ -1218,9 +1298,44 @@ export function Workspace({
         case 'focus':
           if (a.id && bind[a.id]) setFocus(a.id);
           return;
+        case 'split': {
+          const target = a.id && bind[a.id] ? a.id : (focus ?? rendered[0] ?? null);
+          if (target) split(a.dir === 'col' ? 'col' : 'row', target);
+          else act.current({ kind: 'shell' });
+          return;
+        }
+        case 'close': {
+          const target = a.id && bind[a.id] ? a.id : (focus ?? rendered[0] ?? null);
+          if (!target) return;
+          close(target);
+          if (a.res) a.res.handled = true;
+          return;
+        }
       }
     };
   });
+
+  // The keys `shortcut` names, when the host owns the window. Captured, so a
+  // focused field or an iframe's parent sees them first; claimed only when
+  // there is something to do, so ⌘W with no pane is left to the host (its
+  // window).
+  useEffect(() => {
+    if (!shortcuts) return;
+    const onKey = (e: KeyboardEvent) => {
+      const k = shortcut(e);
+      if (!k) return;
+      if (k === 'split-row' || k === 'split-col') act.current({ kind: 'split', dir: k === 'split-row' ? 'row' : 'col' });
+      else if (k === 'close') {
+        const res = { handled: false };
+        act.current({ kind: 'close', res });
+        if (!res.handled) return;
+      } else setSize((n) => (k === 'reset' ? SIZE.default : clampSize(n + (k === 'bigger' ? SIZE.step : -SIZE.step))));
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [shortcuts]);
 
   // The visible undo for "Don't ask again", beside the start buttons wherever
   // they are: there while anything is remembered for this account, gone once
@@ -1459,9 +1574,19 @@ export function Workspace({
         borderColor="$borderColor"
         bg={FRAME[scheme].ground}
       >
+        {/* The scroller is inside the box so that what covers the box (the drag
+            sheet, the picker) stays put while the panes scroll under it. */}
         <YStack
+          ref={(el) => {
+            scroller.current = el instanceof HTMLElement ? el : null;
+          }}
           position="absolute"
           inset={0}
+          style={{ overflowX: scrolls ? 'auto' : 'hidden', overflowY: 'hidden' }}
+        >
+        <YStack
+          position={scrolls ? 'relative' : 'absolute'}
+          inset={scrolls ? undefined : 0}
           style={
             paging
               ? {
@@ -1469,7 +1594,9 @@ export function Workspace({
                   transform: `translate3d(-${(page * 100) / pages}%,0,0)`,
                   transition: drag ? 'none' : 'transform 220ms cubic-bezier(0.22,1,0.36,1)',
                 }
-              : undefined
+              : scrolls
+                ? { width: canvas, height: '100%' }
+                : undefined
           }
         >
           {rendered.map((id) => {
@@ -1487,6 +1614,7 @@ export function Workspace({
             // A page's url IS its binding — there is no credential to mint and
             // nothing spent by framing it. Everything else waits for the mint.
             const url = capped.has(id) ? null : b.kind === 'page' ? b.url : address(come[id]);
+            const frame = url && inlineFrames && isTerminalPage(url) ? docs[url] : url;
             // The one way out for a pane whose terminal did not come up — a
             // frame that never said ready, or an address that never arrived.
             // A frame that never said ready is a credential that no longer
@@ -1623,13 +1751,13 @@ export function Workspace({
 
                 <XStack flex={1} minH={0} flexDirection={paging ? 'column' : 'row'}>
                 <YStack position="relative" flex={1} minH={0} bg={FRAME[scheme].ground}>
-                  {url ? (
+                  {frame ? (
                     <iframe
                       // One frame per address, so a fresh ticket is a fresh
                       // frame and `spend` sees every load of an address.
                       key={url}
                       data-pane={id}
-                      src={url}
+                      src={frame}
                       title={title}
                       // Scripts (a terminal is one), and `allow-same-origin` gives
                       // the frame ITS OWN origin — which ttyd needs for its socket
@@ -1887,6 +2015,7 @@ export function Workspace({
               </YStack>
             );
           })}
+        </YStack>
         </YStack>
 
         {drag ? (
