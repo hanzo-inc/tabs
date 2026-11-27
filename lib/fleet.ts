@@ -56,6 +56,55 @@ export const QUICK = 5_000;
 export const every = (paneWaiting: boolean, visible: boolean): number =>
   paneWaiting && visible ? QUICK : BEAT;
 
+/**
+ * Machines that can serve shells, and the tunnel each one's terminals live on.
+ *
+ * A terminal url is a fact about the MACHINE — one link, one ttyd, one tunnel
+ * — so it is the machine's own `terminal`. The workspace then names a shell per
+ * pane with `?arg=`, so one link serves many.
+ */
+export function terminalHosts(
+  machines: Machine[],
+  sessions: Session[],
+  sandboxes: SandboxMachine[],
+): TerminalHost[] {
+  // Bridge for CLIs that predate the machine's `terminal`: they published it on
+  // their session only, which cloud stops after an hour idle. Drop with them.
+  const bridge = new Map<string, string>();
+  for (const s of sessions) {
+    if (!s.terminal || !s.host) continue;
+    if (s.status !== 'running' && s.status !== 'paused') continue;
+    if (!bridge.has(s.host)) bridge.set(s.host, s.terminal);
+  }
+  const out = new Map<string, TerminalHost>();
+  for (const m of machines) {
+    const key = m.host || m.label || m.id;
+    out.set(key, { machine: key, base: m.terminal || bridge.get(key), status: m.status, label: m.capacity });
+  }
+  for (const [host, url] of bridge) {
+    if (!out.has(host)) out.set(host, { machine: host, base: url, status: 'online' });
+  }
+  // A sandbox has no tunnel to publish — its terminal url is MINTED per open
+  // (a single-use ticket), so the host carries the sandbox id instead of a
+  // base and the workspace mints when a pane binds. One live sandbox per
+  // project is the server's rule, so the project name is a stable, unique
+  // machine name.
+  for (const s of sandboxes) {
+    const key = machineName(s);
+    if (!out.has(key)) {
+      out.set(key, {
+        machine: key,
+        sandbox: s.id,
+        screen: s.class === 'desktop' || s.class === 'browser',
+        status: s.status === 'pending' ? 'pending' : 'online',
+        // No project, no disk that outlives it.
+        temporary: !s.project,
+      });
+    }
+  }
+  return [...out.values()];
+}
+
 export interface Fleet {
   /** The machines, folded. Empty until the first read lands. */
   hosts: TerminalHost[];
@@ -155,50 +204,10 @@ export function useFleet(token: string | null, origin: string = API): Fleet {
     return () => clearInterval(beat);
   }, [token, read, wait]);
 
-  /**
-   * Machines that can serve shells, and the tunnel each one's terminals live on.
-   *
-   * A terminal url is a fact about the MACHINE — one link, one ttyd, one tunnel
-   * — so it is read from whichever of its sessions published one, rather than
-   * treated as a property of that session. The workspace then names a shell per
-   * pane with `?arg=`, so one link serves many.
-   */
-  const hosts = useMemo<TerminalHost[]>(() => {
-    if (!data) return [];
-    const base = new Map<string, string>();
-    for (const s of data.s) {
-      if (!s.terminal || !s.host) continue;
-      if (s.status !== 'running' && s.status !== 'paused') continue;
-      if (!base.has(s.host)) base.set(s.host, s.terminal);
-    }
-    const out = new Map<string, TerminalHost>();
-    for (const m of data.m) {
-      const key = m.host || m.label || m.id;
-      out.set(key, { machine: key, base: base.get(key), status: m.status, label: m.capacity });
-    }
-    for (const [host, url] of base) {
-      if (!out.has(host)) out.set(host, { machine: host, base: url, status: 'online' });
-    }
-    // A sandbox has no tunnel to publish — its terminal url is MINTED per open
-    // (a single-use ticket), so the host carries the sandbox id instead of a
-    // base and the workspace mints when a pane binds. One live sandbox per
-    // project is the server's rule, so the project name is a stable, unique
-    // machine name.
-    for (const s of data.b) {
-      const key = machineName(s);
-      if (!out.has(key)) {
-        out.set(key, {
-          machine: key,
-          sandbox: s.id,
-          screen: s.class === 'desktop' || s.class === 'browser',
-          status: s.status === 'pending' ? 'pending' : 'online',
-          // No project, no disk that outlives it.
-          temporary: !s.project,
-        });
-      }
-    }
-    return [...out.values()];
-  }, [data]);
+  const hosts = useMemo<TerminalHost[]>(
+    () => (data ? terminalHosts(data.m, data.s, data.b) : []),
+    [data],
+  );
 
   /**
    * A fresh url for a pane, minted where the token lives so the workspace stays
