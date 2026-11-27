@@ -10,7 +10,7 @@ import { test, expect, type Page } from '@playwright/test';
 const TARGETS = {
   targets: [
     {
-      id: 'tgt_box', label: 'box', kind: 'gpu', status: 'online', capacity: '10 vCPU / 122G / 1× GB10', host: 'box',
+      id: 'tgt_box', label: 'box', kind: 'gpu', status: 'online', capacity: '10 vCPU / 122G / 1× GB10', host: 'box', terminal: 'https://box.share.hanzo.ai',
       spec: { os: 'linux', arch: 'aarch64', cpus: 10 }, metricsAt: '2026-10-12T15:29:40Z', sessions: 0, running: 0, updatedAt: '2026-10-12T15:29:40Z',
     },
   ],

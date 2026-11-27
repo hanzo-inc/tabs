@@ -31,6 +31,8 @@ export interface Machine {
   host?: string;
   status: string;
   capacity?: string;
+  /** The https url this machine's own `hanzo link` publishes its shell at. */
+  terminal?: string;
 }
 
 export interface Session {
